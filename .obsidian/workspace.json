@@ -14,7 +14,7 @@
               "type": "markdown",
               "state": {
                 "file": "learning/backend/docker/2-usage.md",
-                "mode": "source",
+                "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
@@ -100,7 +100,7 @@
               "type": "backlink",
               "state": {
                 "file": "learning/backend/docker/2-usage.md",
-                "collapseAll": false,
+                "collapseAll": true,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
                 "showSearch": false,
@@ -170,12 +170,12 @@
               "title": "大纲"
             }
           }
-        ]
+        ],
+        "currentTab": 4
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -190,10 +190,24 @@
   },
   "active": "1c8fdb3fe34b006e",
   "lastOpenFiles": [
-    "learning/python/uv-workflow.md",
-    "learning/backend/docker/2-usage.md",
     "learning/backend/docker/1-intro.md",
     "learning/AINative/superpowers/Superpowers框架笔记.md",
+    "learning/frontend/React/2、函数式组件.md",
+    "learning/python/uv-workflow.md",
+    "learning/frontend/React/1、JSX.md",
+    "learning/frontend/React/3、React Hooks.md",
+    "learning/AINative/skill语法.md",
+    "learning/markdown语法.md",
+    "learning/AINative/llm-wiki/skills-demo/1.md",
+    "learning/AINative/llm-wiki/skills-demo",
+    "learning/AINative/llm-wiki/READEME.md",
+    "learning/AINative/llm-wiki/llmwiki.md",
+    "learning/AINative/llm-wiki",
+    "images/docker-architecture.webp",
+    "learning/backend/docker/2-usage.md",
+    "agent",
+    "learning/frontend/React",
+    "learning/frontend",
     "learning/AINative/harness"
   ]
 }
