@@ -11,10 +11,14 @@
             "id": "6c34771ecb4e1ba2",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/docker/6-docker-compose.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "新标签页"
+              "title": "6-docker-compose"
             }
           }
         ]
@@ -95,6 +99,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "learning/backend/docker/6-docker-compose.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -155,7 +160,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "images/frame.png",
+                "file": "learning/backend/docker/6-docker-compose.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -182,8 +187,10 @@
       "bases:新建数据库": false
     }
   },
-  "active": "bd9490ab0991c19d",
+  "active": "6c34771ecb4e1ba2",
   "lastOpenFiles": [
+    "images/docker-compose.png",
+    "images/frame.png",
     "learning/backend/docker/5-dockerfile.md",
     "learning/backend/docker/6-docker-compose.md",
     "learning/backend/docker/4-network.md",
@@ -191,7 +198,6 @@
     "learning/backend/docker/3-command.md",
     "learning/markdown语法.md",
     "learning/backend/互联网架构.md",
-    "images/frame.png",
     "learning/frontend/React/3、React Hooks.md",
     "learning/frontend/React/2、函数式组件.md",
     "learning/frontend/React/1、JSX.md",
