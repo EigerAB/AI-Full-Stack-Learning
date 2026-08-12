@@ -24,16 +24,18 @@ LINSHAODONG@HTJT-LSDONG MINGW64 /e/project/docker
 $ mkdir Dockerfile
 
 LINSHAODONG@HTJT-LSDONG MINGW64 /e/project/docker
-$ cd Dockerfile,
+$ cd Dockerfile/
+
 LINSHAODONG@HTJT-LSDONG MINGW64 /e/project/docker/Dockerfile
 $ vi Dockerfile
 
 LINSHAODONG@HTJT-LSDONG MINGW64 /e/project/docker/Dockerfile
-$cat Dockerfile
+$ cat Dockerfile
 
 FROM nginx
 Run echo ’这是一个本地构建的nginx镜像’ > /usr/share/nginx/html/index.html
 ```
+
 
 **2、FROM 和 RUN 指令的作用**
 
