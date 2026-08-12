@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/backend/互联网架构.md",
-                "mode": "source",
+                "file": "learning/backend/docker/5-dockerfile.md",
+                "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "互联网架构"
+              "title": "5-dockerfile"
             }
           }
         ]
@@ -99,7 +99,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "learning/backend/互联网架构.md",
+                "file": "learning/backend/docker/5-dockerfile.md",
                 "collapseAll": true,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -118,7 +118,7 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "learning/backend/互联网架构.md",
+                "file": "learning/backend/docker/5-dockerfile.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
@@ -161,7 +161,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "learning/backend/互联网架构.md",
+                "file": "learning/backend/docker/5-dockerfile.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -190,18 +190,19 @@
   },
   "active": "1c8fdb3fe34b006e",
   "lastOpenFiles": [
+    "learning/backend/docker/4-network.md",
+    "learning/backend/docker/5-dockerfile.md",
+    "learning/backend/docker/6-docker-compose.md",
+    "learning/backend/docker/3-command.md",
+    "learning/backend/互联网架构.md",
+    "images/docker-compose.png",
     "learning/backend/yaml.md",
     "learning/markdown语法.md",
-    "learning/backend/互联网架构.md",
     "test.md",
     "learning/AINative/superpowers/Superpowers框架笔记.md",
     "images/yaml-1.webp",
     "yaml-1.webp",
-    "learning/backend/docker/5-dockerfile.md",
-    "learning/backend/docker/4-network.md",
-    "learning/backend/docker/6-docker-compose.md",
     "learning/backend/docker/1-intro.md",
-    "learning/backend/docker/3-command.md",
     "learning/backend/docker/2-usage.md",
     "learning/frontend/React/2、函数式组件.md",
     "learning/python/uv-workflow.md",

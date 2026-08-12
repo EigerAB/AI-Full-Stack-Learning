@@ -12,12 +12,7 @@ Dockerfile 是一个用来构建镜像的文本文件，文本内容包含了一
 
 **1、下面以定制一个 nginx 镜像（构建好的镜像内会有一个 /usr/share/nginx/html/index.html 文件）**
 
-在一个空目录下，新建一个名为 Dockerfile 文件，并在文件内添加以下内容：
-
-```bash
-FROM nginx
-RUN echo '这是一个本地构建的nginx镜像' > /usr/share/nginx/html/index.html
-```
+在一个空目录下，新建一个名为 Dockerfile 文件，并在文件内添加以下内容
 
 ```bash
 LINSHAODONG@HTJT-LSDONG MINGW64 /e/project/docker
@@ -67,6 +62,7 @@ RUN wget -O redis.tar.gz "http://download.redis.io/releases/redis-5.0.3.tar.
 RUN tar -xvf redis.tar.gz  
 
 ```
+
 以上执行会创建 3 层镜像。可简化为以下格式：
 
 ```bash
