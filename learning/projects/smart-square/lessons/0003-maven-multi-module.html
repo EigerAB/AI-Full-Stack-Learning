@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 3 课 · Maven 多模块与依赖方向</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .annot {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    font-family: var(--sans);
+    font-size: 0.9rem;
+  }
+  .annot strong { color: #1565c0; }
+  .annot.warn {
+    border-color: var(--warn);
+    background: var(--warn-soft);
+  }
+  .annot.warn strong { color: #e65100; }
+  .dep-graph {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1.2rem 0;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .module-card {
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.8rem 1.1rem;
+    margin: 1rem 0;
+    background: #fff;
+  }
+  .module-card h4 {
+    margin: 0 0 0.3rem;
+    color: var(--ink);
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 1rem;
+  }
+  .module-card .deps {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin: 0.3rem 0;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>第 3 课 · Maven 多模块与依赖方向</h1>
+<p class="meta">
+  课程 ·
+  <a href="0002-spring-boot-basics-in-admin.html">← 上一节：Spring Boot 基础</a> ·
+  <a href="../reference/0001-tech-stack-overview.html">全景图</a> ·
+  <a href="../MISSION.md">学习使命</a>
+</p>
+
+<blockquote>
+  目标：理解 SmartSquare 为什么拆成七个 Maven 模块、依赖方向是怎么规定的、
+  父 POM 如何集中管控版本。学完后你能判断「一段代码应该放在哪个模块」。
+</blockquote>
+
+<h2>一、为什么不用单体，要拆多模块</h2>
+
+<p>上一课你在 admin 里看到了 Controller → Service → Mapper 三层。如果整个项目只有 admin 一个模块，
+那 chat 微服务想复用 <code>Response</code>、<code>BusinessException</code>、<code>ContextHolder</code> 怎么办？
+把 admin 整个引进来？那 chat 就被迫依赖了 admin 的全部 Controller、Service、Mapper——
+编译变慢、耦合变重、改 admin 一个字段的注释都可能让 chat 重新构建。</p>
+
+<div class="callout">
+  <strong>多模块拆分的本质</strong>：把「会被多处复用的东西」和「只属于某个服务的东西」分开。
+  共享的放 common/proto，服务私有的放各自的模块。依赖方向单向流动，避免循环引用。
+</div>
+
+<h2>二、七个模块与依赖方向</h2>
+
+<p>先看父 <code>pom.xml</code> 里声明的全部模块：</p>
+
+<pre><code>&lt;modules&gt;
+    &lt;module&gt;smart-square-common&lt;/module&gt;
+    &lt;module&gt;smart-square-proto&lt;/module&gt;
+    &lt;module&gt;smart-square-admin&lt;/module&gt;
+    &lt;module&gt;smart-square-gateway&lt;/module&gt;
+    &lt;module&gt;smart-square-chat&lt;/module&gt;
+    &lt;module&gt;smart-square-sso&lt;/module&gt;
+    &lt;module&gt;smart-square-knowledge&lt;/module&gt;
+&lt;/modules&gt;</code></pre>
+
+<p>它们的依赖方向是这样的（箭头表示「依赖谁」）：</p>
+
+<div class="dep-graph">                    ┌─────────────────────────────────┐
+                    │     smart-square (父 POM)        │
+                    │  统一管控版本 + 插件版本           │
+                    └──────────────┬──────────────────┘
+                                   │ (parent 继承)
+          ┌────────────┬───────────┼───────────┬────────────┐
+          ▼            ▼           ▼           ▼            ▼
+    ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────────┐ ┌──────────┐
+    │ common   │ │  proto   │ │ admin  │ │ gateway  │ │  chat    │
+    │ (公共库) │ │ (gRPC契约)│ │(主服务) │ │ (网关)   │ │(对话微服) │
+    └────┬─────┘ └────┬─────┘ └───┬────┘ └──────────┘ └─────┬────┘
+         │            │           │                        │
+         │            │     ┌─────┘                        │
+         │            │     │  (依赖 common + proto)       │
+         │            │     │         ┌────────────────────┘
+         │            │     │         │  (依赖 common + proto)
+         │            │     ▼         ▼
+         │            │   ┌──────────────┐
+         │            │   │    common    │
+         │            │   │    proto     │
+         │            │   └──────────────┘
+         │            │
+         │            │  gateway 不依赖 common/proto
+         │            │  （网关只做鉴权路由，不碰业务）
+         │            │
+         ▼            ▼
+    common 和 proto 不依赖任何业务模块
+    （最底层，只依赖第三方库）</div>
+
+<div class="annot">
+  <strong>关键规则：依赖方向严格单向</strong>
+  <ul>
+    <li><code>common</code> 和 <code>proto</code> 在最底层，<strong>不依赖任何业务模块</strong></li>
+    <li><code>admin</code> 和 <code>chat</code> 依赖 <code>common</code> + <code>proto</code></li>
+    <li><code>gateway</code> 独立——不依赖 <code>common</code>/<code>proto</code>，因为它不碰业务逻辑，只做鉴权和路由</li>
+    <li><code>admin</code> 和 <code>chat</code> 之间<strong>不互相依赖</strong>——chat 要调 admin 走 OpenFeign（运行时 HTTP），不是 Maven 依赖（编译期）</li>
+  </ul>
+</div>
+
+<h2>三、逐个模块看 pom.xml</h2>
+
+<div class="module-card">
+<h4>smart-square-common（公共基础设施）</h4>
+<p>放什么：<code>Response</code>、<code>BusinessException</code>、<code>ErrorCode</code>、<code>ContextHolder</code>、
+鉴权注解（<code>@AdminAuth</code> 等）、领域事件定义、<code>IdGenerator</code>、<code>CacheUtil</code>、MyBatis 配置、MinIO 配置。</p>
+<div class="deps">依赖：mybatis-plus-starter、spring-boot-starter-web、spring-boot-starter-security、hutool、caffeine、minio、reactor-core、lombok
+不依赖：任何 smart-square-* 模块</div>
+<p><strong>为什么 common 依赖 web 和 security</strong>：因为 <code>ResponseAdvice</code> 用了 <code>@RestControllerAdvice</code>（web），
+<code>ContextHolder</code> 用了 <code>SecurityContext</code>（security）。common 不是纯工具包，它承载了跨服务共享的框架级基础设施。</p>
+</div>
+
+<div class="module-card">
+<h4>smart-square-proto（gRPC 契约）</h4>
+<p>放什么：<code>.proto</code> 文件。编译时由 <code>protobuf-maven-plugin</code> 自动生成 Java 的消息类和 gRPC stub。</p>
+<div class="deps">依赖：grpc-stub、grpc-protobuf、protobuf-java
+不依赖：任何 smart-square-* 模块</div>
+<p><strong>为什么单独成模块</strong>：admin 和 chat 都要调用意图识别 gRPC 服务，需要同一份 <code>.proto</code> 编译出的 stub。
+如果 proto 定义放在 admin 里，chat 就得依赖 admin——违反依赖方向。单独成模块让两边引用同一份契约。</p>
+</div>
+
+<div class="module-card">
+<h4>smart-square-admin（主服务）</h4>
+<p>放什么：32+ Controller、全部业务 Service、Entity、Mapper、Flyway 迁移脚本、智能编码、MCP 托管、启动入口。</p>
+<div class="deps">依赖：smart-square-common（共享基础设施）
+还依赖：mybatis-plus、DmJdbcDriver（达梦驱动）、springdoc、oauth2-client、easyexcel、aliyun SDK（APIG/MSE）、higress-admin-sdk、bouncycastle 等</div>
+<p><strong>admin 是最「重」的模块</strong>——承载了绝大部分业务逻辑。它的 pom 依赖列表最长，因为要对接各种第三方网关 SDK 和 AI 能力。</p>
+</div>
+
+<div class="module-card">
+<h4>smart-square-chat（对话微服务）</h4>
+<p>放什么：ChatMessageController（SSE）、ChatOrchestrator（意图路由）、A2A 协议对接、独立 Entity/Mapper。</p>
+<div class="deps">依赖：smart-square-common + smart-square-proto
+还依赖：spring-cloud-starter-openfeign（调 admin）、grpc-netty-shaded（gRPC 调意图识别）、agentscope、dashscope、flyway、DmJdbcDriver</div>
+<p><strong>注意 chat 依赖 proto 而 admin 也依赖 proto</strong>——两端共享同一份 gRPC 契约，这正是 proto 独立成模块的价值。</p>
+</div>
+
+<div class="module-card">
+<h4>smart-square-gateway（统一网关）</h4>
+<p>放什么：<code>AuthGlobalFilter</code>、SSO 登录、JWT 签发/校验、身份头注入。</p>
+<div class="deps">依赖：spring-cloud-starter-gateway-server-webflux、nacos-discovery、loadbalancer、redis-reactive、hutool、lombok
+不依赖：smart-square-common、smart-square-proto</div>
+<p><strong>为什么 gateway 不依赖 common</strong>：网关是 WebFlux 响应式模型，common 里的 <code>ResponseAdvice</code>、<code>ContextHolder</code>
+是基于 WebMVC（阻塞式）的。如果 gateway 依赖 common，会引入不兼容的 WebMVC 依赖。网关的鉴权逻辑自己写，不复用 common 的安全设施。</p>
+</div>
+
+<h2>四、父 POM 的集中管控</h2>
+
+<p>打开根目录 <code>pom.xml</code>，你会看到两个关键段：</p>
+
+<h3>properties——版本号集中声明</h3>
+<pre><code>&lt;properties&gt;
+    &lt;spring-boot.version&gt;3.5.9&lt;/spring-boot.version&gt;
+    &lt;spring-cloud.version&gt;2025.0.0&lt;/spring-cloud.version&gt;
+    &lt;mybatisplus.version&gt;3.5.9&lt;/mybatisplus.version&gt;
+    &lt;dm8.jdbc.version&gt;8.1.3.62&lt;/dm8.jdbc.version&gt;
+    &lt;hutool.version&gt;5.8.33&lt;/hutool.version&gt;
+    ...
+&lt;/properties&gt;</code></pre>
+
+<h3>dependencyManagement——版本托管</h3>
+<pre><code>&lt;dependencyManagement&gt;
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.baomidou&lt;/groupId&gt;
+            &lt;artifactId&gt;mybatis-plus-spring-boot3-starter&lt;/artifactId&gt;
+            &lt;version&gt;${mybatisplus.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+        ...
+    &lt;/dependencies&gt;
+&lt;/dependencyManagement&gt;</code></pre>
+
+<div class="annot">
+  <strong>dependencyManagement 和 dependencies 的区别</strong>——这是 Maven 最容易混淆的点：
+  <ul>
+    <li><code>&lt;dependencies&gt;</code>：真正引入依赖，子模块自动继承</li>
+    <li><code>&lt;dependencyManagement&gt;</code>：<strong>只声明版本，不引入</strong>。子模块要用还得在自己的 <code>&lt;dependencies&gt;</code> 里写，但<strong>不用写 <code>&lt;version&gt;</code></strong></li>
+  </ul>
+  举例：common 的 pom 里写 <code>&lt;artifactId&gt;mybatis-plus-spring-boot3-starter&lt;/artifactId&gt;</code> 但没有 <code>&lt;version&gt;</code>——
+  版本由父 POM 的 <code>dependencyManagement</code> 托管。这样升级版本只改父 POM 一处，所有模块同步。
+</div>
+
+<div class="annot warn">
+  <strong>项目规范（硬性）</strong>：
+  <ul>
+    <li>第三方依赖版本<strong>必须在父 POM 的 <code>&lt;properties&gt;</code> + <code>&lt;dependencyManagement&gt;</code> 管理</strong></li>
+    <li>子模块 POM 引用已管理依赖时<strong>不写 <code>&lt;version&gt;</code></strong></li>
+    <li>子模块 POM 里已有的直接版本声明属于<strong>技术债</strong>，不应继续复制</li>
+    <li>新增依赖时：先更新父 POM，再在模块 POM 引用</li>
+  </ul>
+  违反这些规则会导致版本不一致——比如 admin 用 hutool 5.8.33，chat 用 5.8.20，API 行为差异引发难查的 bug。
+</div>
+
+<h2>五、pluginManagement——插件版本也集中管</h2>
+
+<p>同样的模式用于 Maven 插件：</p>
+
+<pre><code>&lt;pluginManagement&gt;
+    &lt;plugins&gt;
+        &lt;plugin&gt;
+            &lt;groupId&gt;com.diffplug.spotless&lt;/groupId&gt;
+            &lt;artifactId&gt;spotless-maven-plugin&lt;/artifactId&gt;
+            &lt;version&gt;${spotless-maven-plugin.version}&lt;/version&gt;
+        &lt;/plugin&gt;
+        ...
+    &lt;/plugins&gt;
+&lt;/pluginManagement&gt;</code></pre>
+
+<p>Spotless（代码格式化）、protobuf-maven-plugin（proto 编译）、maven-compiler-plugin 等插件的版本
+都在父 POM 统一管理。这保证了所有模块用同一套构建工具链。</p>
+
+<h2>六、实战判断：一段代码该放哪个模块</h2>
+
+<p>这是你在维护开发时最常遇到的决策。用几个真实例子练习：</p>
+
+<table>
+<thead><tr><th>要写的东西</th><th>放哪个模块</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td>一个新的 REST Controller（如 <code>OrderController</code>）</td><td>admin</td><td>Controller 是服务私有逻辑，只有 admin 暴露 REST API</td></tr>
+<tr><td>一个新的业务异常码（如 <code>ORDER_NOT_FOUND</code>）</td><td>common</td><td><code>ErrorCode</code> 枚举在 common，chat 也可能抛这个码</td></tr>
+<tr><td>一个新的 gRPC 消息定义</td><td>proto</td><td>.proto 契约要被 admin 和 chat 共享</td></tr>
+<tr><td>一个新的网关鉴权过滤器</td><td>gateway</td><td>网关自己的逻辑，且 gateway 不依赖 common</td></tr>
+<tr><td>一个新的领域事件（如 <code>OrderDeletingEvent</code>）</td><td>common</td><td>事件定义在 common 的 <code>core/event/</code>，供 admin 共享</td></tr>
+<tr><td>一个新的 SSE 对话事件类型</td><td>chat</td><td>AG-UI 对话是 chat 专属逻辑，admin 不需要</td></tr>
+<tr><td>一个新的 MyBatis TypeHandler</td><td>看情况</td><td>如果 admin 和 chat 都用→common；只有 chat 用→chat</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+  <strong>判断口诀</strong>：
+  <ol>
+    <li><strong>只有网关用</strong>→gateway（网关不依赖 common）</li>
+    <li><strong>admin 和 chat 都会用</strong>→common（共享基础设施）</li>
+    <li><strong>是 gRPC 契约</strong>→proto（编译生成的 stub 要共享）</li>
+    <li><strong>只有某个服务用</strong>→那个服务自己的模块</li>
+  </ol>
+</div>
+
+<h2>七、构建顺序的坑</h2>
+
+<p>多模块项目有<strong>构建顺序</strong>问题。从 <code>local/AGENTS.md</code> 的操作记录里可以看到真实踩坑经验：</p>
+
+<div class="annot warn">
+  <strong>真实坑</strong>：common 模块代码变更后，如果只 <code>mvn package admin</code>，
+  admin 编译时可能从本地 <code>.m2</code> 仓库拿到<strong>旧版 common</strong>，找不到 common 的新方法。
+  <br><br>
+  <strong>正确做法</strong>：common 变更后先 <code>mvn install common proto</code> 把新版本装进 .m2，
+  再 <code>mvn package admin</code>。或者直接 <code>mvn install -pl common,proto -am</code>（<code>-am</code> 表示同时构建依赖）。
+</div>
+
+<p>proto 模块也有类似问题：<code>mvn clean</code> 会删除 proto 的 protoc 依赖缓存，重新下载时可能失败。
+所以构建时要注意顺序，必要时跳过 proto 的 clean。</p>
+
+<h2>八、本课要点回顾</h2>
+
+<table>
+<thead><tr><th>概念</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td>为什么拆模块</td><td>共享的东西和私有的东西分开，避免编译耦合</td></tr>
+<tr><td>依赖方向</td><td>common/proto 最底层；admin/chat 依赖它们；gateway 独立；admin/chat 不互相依赖</td></tr>
+<tr><td>gateway 不依赖 common</td><td>网关是 WebFlux，common 是 WebMVC，引入会冲突</td></tr>
+<tr><td>chat 调 admin</td><td>走 OpenFeign（运行时 HTTP），不是 Maven 依赖（编译期）</td></tr>
+<tr><td>父 POM 管控</td><td>properties + dependencyManagement 托管版本，子模块不写 version</td></tr>
+<tr><td>pluginManagement</td><td>插件版本同样在父 POM 集中管理</td></tr>
+<tr><td>构建顺序</td><td>common 变更后先 install 再 package 上层模块</td></tr>
+</tbody>
+</table>
+
+<!-- 互动测验 -->
+<div class="quiz" id="q1">
+  <q>问题 1：你要新增一个 ErrorCode 枚举值，应该改哪个模块？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q1" data-correct="false">smart-square-admin，因为 ErrorCode 是业务错误码</label></li>
+    <li><label><input type="radio" name="q1" data-correct="true">smart-square-common，因为 ErrorCode 在 common 且 chat 也会用</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">smart-square-proto，因为错误码是契约</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">哪个模块都行，只要能编译通过</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q2">
+  <q>问题 2：smart-square-gateway 为什么不依赖 smart-square-common？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q2" data-correct="false">因为 gateway 不需要统一响应格式</label></li>
+    <li><label><input type="radio" name="q2" data-correct="true">因为 gateway 是 WebFlux 响应式，common 的 ResponseAdvice/ContextHolder 基于 WebMVC，引入会冲突</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">因为 gateway 团队和 admin 团队是分开的</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">因为 Maven 不允许 gateway 依赖 common</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q3">
+  <q>问题 3：子模块 pom.xml 引用父 POM 已托管的依赖时，应该怎么写？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q3" data-correct="false">写完整的 groupId + artifactId + version，确保明确</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">用 ${property} 引用父 POM 的版本变量</label></li>
+    <li><label><input type="radio" name="q3" data-correct="true">只写 groupId + artifactId，不写 version，版本由父 POM dependencyManagement 托管</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">写在 dependencyManagement 而不是 dependencies 里</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q4">
+  <q>问题 4：chat 微服务需要调用 admin 的产品查询接口，在 Maven 层面应该怎么做？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q4" data-correct="false">在 chat 的 pom.xml 加上对 smart-square-admin 的依赖</label></li>
+    <li><label><input type="radio" name="q4" data-correct="true">不在 Maven 层面依赖 admin，而是用 OpenFeign 在运行时通过 HTTP 调用 admin 的接口</label></li>
+    <li><label><input type="radio" name="q4" data-correct="false">把 admin 的 ProductService 接口抽到 common 里</label></li>
+    <li><label><input type="radio" name="q4" data-correct="false">让 chat 直连 admin 的数据库</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<script>
+  const hints = {
+    q1: 'ErrorCode 枚举在 common 模块的 core/exception/ 包下。chat 微服务抛 BusinessException 时也要用这些码，所以必须共享。',
+    q2: 'common 依赖了 spring-boot-starter-web（WebMVC），而 gateway 用 spring-cloud-starter-gateway-server-webflux。WebMVC 和 WebFlux 不能共存于同一个应用。',
+    q3: 'dependencyManagement 只声明版本不引入依赖。子模块在 dependencies 里引用时不写 version，Maven 会自动从父 POM 的 dependencyManagement 匹配版本。',
+    q4: 'Maven 依赖是编译期的，会让 chat 被迫引入 admin 的全部代码。OpenFeign 是运行时 HTTP 调用，chat 只需要一个 Feign 接口定义，不需要 admin 的实现类。'
+  };
+  document.querySelectorAll('.quiz').forEach(quiz => {
+    const options = quiz.querySelectorAll('input[type="radio"]');
+    const feedback = quiz.querySelector('.feedback');
+    options.forEach(opt => {
+      opt.addEventListener('change', () => {
+        const isCorrect = opt.dataset.correct === 'true';
+        feedback.className = 'feedback ' + (isCorrect ? 'correct' : 'wrong');
+        feedback.textContent = isCorrect
+          ? '✓ 正确。' + hints[quiz.id]
+          : '✗ 再想想。提示：回顾「逐个模块看 pom.xml」和「父 POM 集中管控」两节。';
+      });
+    });
+  });
+</script>
+
+<div class="lesson-footer">
+  <h3>下一步</h3>
+  <p>
+    → 上一节：<a href="0002-spring-boot-basics-in-admin.html">Spring Boot 基础</a><br>
+    → 下一节：<a href="0004-nacos-discovery-config.html">Nacos 注册发现与配置中心</a>
+  </p>
+  <h3>推荐一手资料</h3>
+  <p>
+    <a href="../../standards/backend/dependency-management.md">依赖管理规范</a> ·
+    <a href="../../standards/backend/project-structure.md">项目结构规范</a> ·
+    <a href="https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html">Maven 依赖机制官方文档</a>
+  </p>
+  <h3>动手练习（可选）</h3>
+  <p>
+    打开 <code>smart-square-chat/pom.xml</code>，找到对 <code>smart-square-common</code> 和 <code>smart-square-proto</code> 的依赖声明。
+    注意它们<strong>没有 <code>&lt;version&gt;</code> 标签</strong>——版本从哪来的？去父 <code>pom.xml</code> 的
+    <code>&lt;dependencyManagement&gt;</code> 里找对应的声明。
+  </p>
+  <h3>有疑问？</h3>
+  <p>随时向你的 AI 老师提问——比如「为什么 sso 和 knowledge 模块没在架构图里详细讲」「dependencyManagement 能不能继承多级父 POM」都可以深挖。</p>
+</div>
+
+</div>
+</body>
+</html>

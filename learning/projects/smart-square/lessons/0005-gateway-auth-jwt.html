@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 5 课 · 网关集中鉴权与 JWT 机制</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .annot {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    font-family: var(--sans);
+    font-size: 0.9rem;
+  }
+  .annot strong { color: #1565c0; }
+  .annot.warn {
+    border-color: var(--warn);
+    background: var(--warn-soft);
+  }
+  .annot.warn strong { color: #e65100; }
+  .annot.ok {
+    border-color: var(--ok);
+    background: var(--ok-soft);
+  }
+  .annot.ok strong { color: #2e7d32; }
+  .flow {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1.2rem 0;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .step {
+    display: inline-block;
+    width: 1.7em;
+    color: var(--accent);
+    font-weight: 700;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>第 5 课 · 网关集中鉴权与 JWT 机制</h1>
+<p class="meta">
+  课程 ·
+  <a href="0004-nacos-discovery-config.html">← 上一节：Nacos 注册发现</a> ·
+  <a href="../reference/0001-tech-stack-overview.html">全景图</a> ·
+  <a href="../MISSION.md">学习使命</a>
+</p>
+
+<blockquote>
+  目标：理解一个请求从浏览器到 admin 的<strong>完整认证链路</strong>——
+  网关怎么校验 JWT、怎么注入可信头、下游怎么还原身份、角色注解怎么拦截。
+  这是认证授权体系的第一节课，聚焦「认证」（你是谁），下一节课讲「授权」（你能做什么）。
+</blockquote>
+
+<h2>一、认证 vs 授权——先分清两个概念</h2>
+
+<table>
+<thead><tr><th></th><th>认证 (Authentication)</th><th>授权 (Authorization)</th></tr></thead>
+<tbody>
+<tr><td>回答什么问题</td><td>你是谁？</td><td>你能做什么？</td></tr>
+<tr><td>本项目在哪做</td><td>网关 AuthGlobalFilter + 下游 TrustedHeaderAuthenticationFilter</td><td>下游 SecurityConfig + @AdminAuth 等注解</td></tr>
+<tr><td>关键机制</td><td>JWT 校验 + Redis 会话回查</td><td>Spring Security 方法级安全 + 角色注解</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+  本节课讲<strong>认证</strong>（网关侧），下一节课讲<strong>授权</strong>（下游侧）。
+  两节课合起来就是完整的「网关集中认证 + 下游分散授权」架构。
+</div>
+
+<h2>二、整体认证链路全景</h2>
+
+<div class="flow">浏览器
+  │  GET /products  (Cookie: auth_token=eyJhbG...)
+  ▼
+┌──────────────────────────────────────────────────────┐
+│  gateway AuthGlobalFilter (Order=-100, 最先执行)      │
+│                                                       │
+│  <span class="step">1</span>剥离外部伪造的 X-User-* 头（防伪造）      │
+│  <span class="step">2</span>注入 X-Trace-Id（全链路追踪）              │
+│  <span class="step">3</span>/sso/** 和 /auth/** 直接放行（登录前置端点）│
+│  <span class="step">4</span>提取 token（Cookie / Authorization Bearer）│
+│  <span class="step">5</span>无 token → 放行（剥头后），授权交下游        │
+│  <span class="step">6</span>有 token → 校验：                        │
+│       ├─ JwtVerifier 验签 + 检查过期 → 拿 sessionId    │
+│       └─ SessionAuthenticator 用 sessionId 查 Redis   │
+│            └─ 会话存在 → 解析出 userId/roles/roleNames │
+│  <span class="step">7</span>校验通过 → 注入 X-User-Id 等可信头         │
+│  <span class="step">8</span>校验失败 → 401（不降级放行！）             │
+│  <span class="step">9</span>转发给下游（带可信头，不带 token）         │
+└──────────────────┬───────────────────────────────────┘
+                   ▼
+┌──────────────────────────────────────────────────────┐
+│  admin TrustedHeaderAuthenticationFilter             │
+│                                                       │
+│  <span class="step">①</span>读 X-User-Id / X-User-Type / X-Org-Code 等头  │
+│  <span class="step">②</span>构建 Spring Security Authentication        │
+│  <span class="step">③</span>写入 SecurityContextHolder + ContextHolder   │
+│  <span class="step">④</span>chain.doFilter() 继续过滤器链               │
+│  <span class="step">⑤</span>finally 清理 ThreadLocal（防泄漏）          │
+└──────────────────┬───────────────────────────────────┘
+                   ▼
+┌──────────────────────────────────────────────────────┐
+│  Spring Security 方法级安全                            │
+│                                                       │
+│  @AdminAuth → @PreAuthorize("isAuthenticated()")     │
+│  → 检查 SecurityContext 有无 Authentication           │
+│  → 有 → 放行 / 无 → 401                               │
+└──────────────────────────────────────────────────────┘</div>
+
+<h2>三、网关 AuthGlobalFilter——逐段拆解</h2>
+
+<h3>步骤 1：剥离外部伪造头（防伪造的第一道防线）</h3>
+
+<pre><code>// AuthGlobalFilter.java
+ServerHttpRequest.Builder builder = request.mutate();
+GatewayHeaders.ALL.forEach(header -> builder.headers(headers -> headers.remove(header)));
+builder.header(GatewayHeaders.TRACE_ID, "trace-" + IdUtil.fastSimpleUUID());</code></pre>
+
+<div class="annot warn">
+  <strong>为什么必须先剥离</strong>：如果外部请求自带 <code>X-User-Id: admin</code> 头，
+  网关不剥就直接转发，下游会以为这是管理员——<strong>身份伪造</strong>！
+  所以网关在一切处理之前，先删除所有 <code>X-User-*</code> 头，再由自己重新注入校验过的真实身份。
+  <br><br>
+  <strong>安全前提</strong>：下游服务不可绕过网关直达。如果外部能直接访问 admin 的 8090 端口，
+  这层防护就失效了——所以部署时必须用网络策略隔离内部端口。
+</div>
+
+<h3>步骤 2：登录前置端点直接放行</h3>
+
+<pre><code>if (path.startsWith(SSO_PATH_PREFIX) || path.startsWith(AUTH_PATH_PREFIX)) {
+    return chain.filter(exchange.mutate().request(builder.build()).build());
+}</code></pre>
+
+<div class="annot">
+  <code>/sso/**</code>（SSO 登录链路）和 <code>/auth/**</code>（登录模式探测、ticket 换 token、登出）
+  必须在<strong>未登录</strong>时可达——否则逻辑死结：登出后 Cookie 还在，网关据此回 401，
+  前端跳登录页又要查登录模式 → 又 401 → 死循环。
+  <br><br>
+  放行≠免鉴权：网关只是不校验 token、不注入身份头，下游仍按匿名处理。
+</div>
+
+<h3>步骤 3：提取 token</h3>
+
+<pre><code>String token = extractToken(request, path);
+if (StrUtil.isBlank(token)) {
+    return chain.filter(exchange.mutate().request(builder.build()).build());  // 无 token 放行
+}</code></pre>
+
+<div class="annot">
+  <strong>无 token 放行</strong>是刻意设计：有些端点是公开的（<code>@PublicAccess</code>），
+  不需要登录。网关不知道哪些端点公开，所以无 token 时不拦截，交给下游 SecurityConfig 判断——
+  公开端点放行，受保护端点返回 401。这就是「网关做认证，下游做授权」的分工。
+</div>
+
+<h3>步骤 4：JWT 校验 + Redis 会话回查</h3>
+
+<p>这是认证的核心。分两步：<strong>先验 JWT 签名，再查 Redis 会话</strong>。</p>
+
+<h4>4a. JwtVerifier——验签并提取 sessionId</h4>
+
+<pre><code>// JwtVerifier.java
+public String verifyAndGetSessionId(String token) {
+    String secret = properties.getJwtSecret();       // HS256 密钥
+    JWT jwt = JWTUtil.parseToken(token);
+    boolean valid = jwt.setSigner(JWTSignerUtil.hs256(secret.getBytes(UTF_8))).verify();
+    if (!valid) throw new IllegalArgumentException("令牌签名无效");
+
+    // 检查过期
+    Object expObj = jwt.getPayloads().get(JWT.EXPIRES_AT);
+    if (expObj != null && Long.parseLong(expObj.toString()) * 1000 <= System.currentTimeMillis())
+        throw new IllegalArgumentException("令牌已过期");
+
+    Object sid = jwt.getPayload("sessionId");
+    if (sid == null) throw new IllegalArgumentException("令牌缺少 sessionId 声明");
+    return sid.toString();
+}</code></pre>
+
+<div class="annot">
+  <strong>JWT 在这个项目里只携带 sessionId，不携带用户信息</strong>。
+  这和很多教程里「JWT 里放 userId/roles」的做法不同。为什么？
+  <br><br>
+  因为<strong>JWT 是无状态的，签发后无法撤销</strong>。如果用户登出了，但 JWT 还没过期，
+  拿着旧 JWT 仍然能访问——这就是为什么本项目用 Redis 会话：JWT 只是一个「会话指针」，
+  真正的身份信息存在 Redis 里，登出时删掉 Redis 会话，JWT 立即失效。
+  <br><br>
+  这叫 <strong>Session-in-Redis + JWT-as-pointer</strong> 模式，兼顾了 JWT 的无状态校验和会话的可撤销性。
+</div>
+
+<h4>4b. SessionAuthenticator——查 Redis 拿真实身份</h4>
+
+<pre><code>// SessionAuthenticator.java
+public Mono&lt;AuthenticatedUser&gt; authenticate(String token) {
+    return Mono.fromCallable(() -> jwtVerifier.verifyAndGetSessionId(token))
+            .subscribeOn(Schedulers.boundedElastic())
+            .flatMap(sessionId ->
+                    redisTemplate.opsForValue()
+                            .get("square:session:" + sessionId)  // 查 Redis
+                            .mapNotNull(this::toUser));          // 解析 JSON → AuthenticatedUser
+}</code></pre>
+
+<div class="annot">
+  Redis 里存的会话 JSON 结构大致是：
+  <pre><code>{"userId":"xxx", "userName":"张三", "orgCode":"ORG001",
+ "roles":["47DB3A..."], "roleNames":["应用广场超级管理员"]}</code></pre>
+  <code>square:session:{sessionId}</code> 是 Redis key 的约定格式。
+  会话不存在（被登出删除或过期）时返回 <code>Mono.empty()</code>——网关据此回 401。
+</div>
+
+<h3>步骤 5：校验通过注入可信头 / 失败回 401</h3>
+
+<pre><code>// 校验通过
+return userMono.doOnNext(user -> injectHeaders(builder, user))
+        .then(Mono.defer(() -> chain.filter(exchange.mutate().request(builder.build()).build())))
+        .onErrorResume(e -> unauthorized(exchange, path, e));
+
+// 注入头
+private void injectHeaders(ServerHttpRequest.Builder builder, AuthenticatedUser user) {
+    builder.header(GatewayHeaders.USER_ID, user.userId());
+    builder.header(GatewayHeaders.USER_TYPE, user.userType());
+    builder.header(GatewayHeaders.ORG_CODE, user.orgCode());
+    builder.header(GatewayHeaders.USER_NAME, HeaderValueCodec.encode(user.userName()));  // 中文编码
+    builder.header(GatewayHeaders.USER_ROLES, String.join(",", user.roles()));
+    builder.header(GatewayHeaders.USER_ROLE_NAMES,
+            HeaderValueCodec.encode(String.join(",", user.roleNames())));  // 角色名编码
+}</code></pre>
+
+<div class="annot warn">
+  <strong>带了 token 却确立不了身份 → 401，不降级放行</strong>。这是刻意的设计：
+  <br><br>
+  如果用户带了 token（自认为在登录态），但会话已被登出删除或过期，
+  网关必须回 401 让前端清理本地凭据并重新登录。<strong>如果静默降级放行</strong>，
+  前端永远等不到 401，会一直停在「看似登录、接口全返回空、写操作报权限不足」的残废状态。
+</div>
+
+<div class="annot">
+  <strong>中文编码</strong>：HTTP 头按 ISO-8859-1 传输，中文姓名和角色名（如「应用广场超级管理员」）
+  必须 URL 编码后写入头。下游 <code>TrustedHeaderAuthenticationFilter</code> 解码还原。
+  注意角色名<strong>先编码再 join</strong>——因为编码会把真实逗号转义为 <code>%2C</code>，
+  如果先 join 再编码，下游解码后切分会把单个角色名拆碎。
+</div>
+
+<h2>四、下游 TrustedHeaderAuthenticationFilter——还原身份</h2>
+
+<p>admin 收到网关转发的请求（带可信头，不带 token），用 <code>TrustedHeaderAuthenticationFilter</code> 还原身份：</p>
+
+<pre><code>// TrustedHeaderAuthenticationFilter.java（在 common 模块，admin/chat 共用）
+@Override
+protected void doFilterInternal(HttpServletRequest request, ...) {
+    try {
+        String traceId = request.getHeader(TrustedHeaders.TRACE_ID);
+        if (StrUtil.isNotBlank(traceId)) {
+            contextHolder.saveTraceId(traceId);
+            MDC.put(MDC_TRACE_ID, traceId);  // 日志里能打 traceId
+        }
+
+        String userId = request.getHeader(TrustedHeaders.USER_ID);
+        String userType = request.getHeader(TrustedHeaders.USER_TYPE);
+        if (StrUtil.isNotBlank(userId) && StrUtil.isNotBlank(userType)) {
+            String orgCode = request.getHeader(TrustedHeaders.ORG_CODE);
+            String userName = decodeHeader(request.getHeader(TrustedHeaders.USER_NAME));
+            List&lt;String&gt; roles = splitCsvHeader(request.getHeader(TrustedHeaders.USER_ROLES));
+            List&lt;String&gt; roleNames = splitCsvHeader(
+                    decodeHeader(request.getHeader(TrustedHeaders.USER_ROLE_NAMES)));
+
+            // 构建 Spring Security Authentication
+            String role = "ROLE_" + userType.toUpperCase();
+            UsernamePasswordAuthenticationToken authentication =
+                    new UsernamePasswordAuthenticationToken(userId, null,
+                            Collections.singletonList(new SimpleGrantedAuthority(role)));
+            authentication.setDetails(HostSsoUser.builder()
+                    .userId(userId).userName(userName).orgCode(orgCode)
+                    .roles(roles).roleNames(roleNames).traceId(traceId).build());
+
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+            contextHolder.saveOrgCode(orgCode);
+            contextHolder.saveRoles(roles);
+            contextHolder.saveRoleNames(roleNames);
+        }
+        chain.doFilter(request, response);
+    } finally {
+        // 清理 ThreadLocal，避免线程复用导致身份泄漏
+        contextHolder.clearOrgCode();
+        contextHolder.clearRoles();
+        contextHolder.clearRoleNames();
+        contextHolder.clearTraceId();
+        MDC.remove(MDC_TRACE_ID);
+    }
+}</code></pre>
+
+<div class="annot ok">
+  <strong>三个关键设计</strong>：
+  <ol>
+    <li><strong>不校验 token</strong>——网关已经校过了，下游只从头还原身份。注释明确写：「本过滤器不做 token 校验——校验已在网关集中完成」</li>
+    <li><strong>写入两处</strong>：<code>SecurityContextHolder</code>（Spring Security 用）+ <code>ContextHolder</code>（业务代码用，ThreadLocal）。SSE 异步线程通过 Authentication details 回退获取</li>
+    <li><strong>finally 清理 ThreadLocal</strong>——Servlet 容器用线程池复用线程，不清理会导致下一个请求拿到上一个用户的身份（<strong>身份泄漏 bug</strong>）</li>
+  </ol>
+</div>
+
+<h2>五、SecurityConfig——下游的授权配置</h2>
+
+<pre><code>// admin 的 SecurityConfig.java
+@Configuration
+@EnableMethodSecurity   // 开启方法级安全（@PreAuthorize 生效）
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .csrf(disable)                           // 无状态 API，不需要 CSRF
+            .sessionManagement(STATELESS)            // 不创建 HttpSession，纯无状态
+            .authorizeHttpRequests(auth -> {
+                auth.dispatcherTypeMatchers(ASYNC).permitAll()  // SSE 异步分发放行
+                    .requestMatchers(POST, "/developers").permitAll()  // 开发者注册公开
+                    .requestMatchers(AUTH_WHITELIST).permitAll()       // 登录相关端点
+                    .requestMatchers(SWAGGER_WHITELIST).permitAll()
+                    .requestMatchers(OPEN_API_WHITELIST).permitAll();
+                // @PublicAccess 注解的端点也放行（扫描器自动发现）
+                for (PublicAccessEndpoint endpoint : publicEndpoints) {
+                    auth.requestMatchers(endpoint.httpMethod(), endpoint.path()).permitAll();
+                }
+                auth.anyRequest().authenticated();   // 其余全部需要认证
+            })
+            .exceptionHandling(ex -> ex.authenticationEntryPoint(
+                (req, res, authEx) -> {
+                    res.setStatus(401);
+                    res.getWriter().write("{\"code\":\"UNAUTHORIZED\",\"loginUrl\":\"...\"}");
+                }))
+            // 网关已校验 token，本服务仅从可信头还原身份
+            .addFilterBefore(
+                new TrustedHeaderAuthenticationFilter(contextHolder),
+                UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+}</code></pre>
+
+<div class="annot">
+  <strong>三层放行策略</strong>：
+  <ol>
+    <li><strong>硬编码白名单</strong>：登录端点、Swagger、系统端点——写在 <code>AUTH_WHISTLIST</code> 等数组里</li>
+    <li><strong>@PublicAccess 扫描</strong>：<code>PublicAccessPathScanner</code> 启动时扫描所有 Controller，找到标了 <code>@PublicAccess</code> 的方法，自动注册为公开端点——<strong>不用手动维护白名单</strong></li>
+    <li><strong>兜底</strong>：<code>anyRequest().authenticated()</code>——没明确放行的全部要认证</li>
+  </ol>
+</div>
+
+<h2>六、角色注解——@AdminAuth 的真面目</h2>
+
+<p>上一课你看到 <code>ProductController</code> 上标了 <code>@AdminAuth</code>。它的实现极其简洁：</p>
+
+<pre><code>// AdminAuth.java（在 common 模块）
+@Target({ElementType.METHOD, ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+@PreAuthorize("isAuthenticated()")   // ← 就是这一行
+public @interface AdminAuth {}</code></pre>
+
+<div class="annot">
+  <strong>@AdminAuth 本质就是 @PreAuthorize("isAuthenticated()") 的别名</strong>。
+  <code>@PreAuthorize</code> 是 Spring Security 的方法级安全注解，
+  <code>isAuthenticated()</code> 表示「只要登录了就放行」。
+  <br><br>
+  注释写的是「过渡期：登录即可访问；细粒度按组织/授权的鉴权改造见子系统 B」——
+  说明当前 <code>@AdminAuth</code> 只做了<strong>认证级</strong>拦截（登录即可），
+  更细粒度的<strong>授权</strong>（如「只有某组织的管理员才能删产品」）是后续改造方向。
+  <br><br>
+  其他注解同理：<code>@DeveloperAuth</code>、<code>@AdminOrDeveloperAuth</code>、<code>@PublicAccess</code>
+  都是 <code>@PreAuthorize</code> 的语义化别名，让 Controller 代码更易读。
+</div>
+
+<h2>七、为什么这样设计——架构决策回顾</h2>
+
+<table>
+<thead><tr><th>决策</th><th>选择</th><th>核心原因</th></tr></thead>
+<tbody>
+<tr><td>认证在哪做</td><td>网关集中</td><td>下游不用重复实现 JWT/JADP 校验，一处变更全局生效</td></tr>
+<tr><td>JWT 携带什么</td><td>只带 sessionId</td><td>JWT 不可撤销，身份放 Redis 会话里，登出删 Redis 即失效</td></tr>
+<tr><td>身份怎么传给下游</td><td>可信头 X-User-*</td><td>头比 token 轻量，下游不用再解析 JWT，直接读头</td></tr>
+<tr><td>防伪造</td><td>网关先剥离再注入</td><td>外部不能自带 X-User-* 头伪造身份</td></tr>
+<tr><td>无 token 怎么办</td><td>放行交下游</td><td>网关不知道哪些端点公开，交给 SecurityConfig 判断</td></tr>
+<tr><td>有 token 但失效</td><td>401 不降级</td><td>否则前端停在「看似登录实则失效」的残废状态</td></tr>
+<tr><td>授权在哪做</td><td>下游分散</td><td>每个 Controller 用 @AdminAuth 等注解声明自己的权限要求</td></tr>
+<tr><td>ThreadLocal</td><td>finally 清理</td><td>线程池复用线程，不清理会身份泄漏</td></tr>
+</tbody>
+</table>
+
+<h2>八、本课要点回顾</h2>
+
+<table>
+<thead><tr><th>概念</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td>认证 vs 授权</td><td>认证=你是谁（网关做），授权=你能做什么（下游做）</td></tr>
+<tr><td>AuthGlobalFilter</td><td>Order=-100 最先执行；剥离伪造头→放行登录端点→提取 token→校验→注入可信头</td></tr>
+<tr><td>JWT 机制</td><td>HS256 签名；只携带 sessionId；签名+过期校验在 JwtVerifier</td></tr>
+<tr><td>Session-in-Redis</td><td>真实身份存 Redis，JWT 只是指针；登出删 Redis 即撤销</td></tr>
+<tr><td>可信头注入</td><td>X-User-Id/Type/OrgCode/Name/Roles/RoleNames；中文 URL 编码</td></tr>
+<tr><td>无 token 放行</td><td>网关不拦截，交下游 SecurityConfig 判断公开/受保护</td></tr>
+<tr><td>有 token 失效</td><td>401 不降级，让前端清理凭据重新登录</td></tr>
+<tr><td>TrustedHeaderAuthenticationFilter</td><td>下游从头还原身份，写入 SecurityContext + ContextHolder，finally 清理</td></tr>
+<tr><td>@AdminAuth</td><td>= @PreAuthorize("isAuthenticated()")，认证级拦截，细粒度授权待改造</td></tr>
+</tbody>
+</table>
+
+<!-- 互动测验 -->
+<div class="quiz" id="q1">
+  <q>问题 1：本项目的 JWT 里携带了什么信息？为什么不像很多教程那样把 userId/roles 放进 JWT？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q1" data-correct="false">携带 userId 和 roles，因为 JWT 是无状态的，这样下游不用查数据库</label></li>
+    <li><label><input type="radio" name="q1" data-correct="true">只携带 sessionId，真实身份存 Redis 会话里——这样登出时删 Redis 即可撤销，JWT 本身不可撤销</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">携带完整的用户信息加密块，下游解密获取</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">不携带任何信息，纯随机 token</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q2">
+  <q>问题 2：网关 AuthGlobalFilter 为什么在一切处理之前先剥离 X-User-* 头？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q2" data-correct="false">为了节省请求体大小</label></li>
+    <li><label><input type="radio" name="q2" data-correct="true">防止外部请求自带 X-User-* 头伪造身份——先删再由网关注入校验过的真实身份</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">因为 HTTP 规范不允许这些头名</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">为了兼容旧版浏览器</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q3">
+  <q>问题 3：用户带了 token 但 Redis 里会话已被登出删除，网关应该怎么做？为什么？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q3" data-correct="false">降级为匿名放行，让下游按匿名处理</label></li>
+    <li><label><input type="radio" name="q3" data-correct="true">回 401 不降级——否则前端永远等不到 401，停在「看似登录实则失效」的残废状态</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">自动用 JADP 回退解析身份</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">重定向到登录页</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q4">
+  <q>问题 4：TrustedHeaderAuthenticationFilter 的 finally 块里清理 ThreadLocal 是为了防止什么问题？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q4" data-correct="false">内存泄漏</label></li>
+    <li><label><input type="radio" name="q4" data-correct="true">线程池复用线程，不清理会导致下一个请求拿到上一个用户的身份（身份泄漏）</label></li>
+    <li><label><input type="radio" name="q4" data-correct="false">数据库连接泄漏</label></li>
+    <li><label><input type="radio" name="q4" data-correct="false">Redis 连接泄漏</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q5">
+  <q>问题 5：@AdminAuth 注解的实际鉴权逻辑是什么？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q5" data-correct="false">通过 AOP 切面检查用户是否是管理员角色</label></li>
+    <li><label><input type="radio" name="q5" data-correct="true">就是 @PreAuthorize("isAuthenticated()") 的别名——只要登录了就放行，当前不检查具体角色</label></li>
+    <li><label><input type="radio" name="q5" data-correct="false">查数据库判断用户是否是管理员</label></li>
+    <li><label><input type="radio" name="q5" data-correct="false">调用 JADP 接口验证角色</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<script>
+  const hints = {
+    q1: 'JWT 签发后不可撤销（在过期前一直有效）。如果把身份放 JWT 里，用户登出后旧 JWT 仍能用。本项目用 Session-in-Redis 模式：JWT 只带 sessionId，身份存 Redis，登出删 Redis 即失效。',
+    q2: '如果外部请求自带 X-User-Id: admin 头，网关不删就转发，下游会以为是管理员。所以网关先删所有 X-User-* 头，再注入校验过的真实身份。安全前提是外部不能绕过网关直达下游（网络策略保证）。',
+    q3: '用户带了 token 说明自认为在登录态。如果会话已被删（登出/过期），网关必须回 401 让前端清理凭据。如果降级放行，前端永远等不到 401，无法触发重新登录，停在「看似登录、接口全返回空」的残废状态。',
+    q4: 'Servlet 容器（Tomcat）用线程池复用线程。一个请求处理完后线程不销毁，而是回到池里服务下一个请求。如果 ThreadLocal 不清理，下一个请求会读到上一个用户的 orgCode/roles，造成身份泄漏。',
+    q5: '@AdminAuth 上标了 @PreAuthorize("isAuthenticated()")，Spring Security 的方法级安全会检查 SecurityContext 里有没有 Authentication。有就放行，没有就 401。注释写明这是「过渡期」，细粒度角色授权是后续改造方向。'
+  };
+  document.querySelectorAll('.quiz').forEach(quiz => {
+    const options = quiz.querySelectorAll('input[type="radio"]');
+    const feedback = quiz.querySelector('.feedback');
+    options.forEach(opt => {
+      opt.addEventListener('change', () => {
+        const isCorrect = opt.dataset.correct === 'true';
+        feedback.className = 'feedback ' + (isCorrect ? 'correct' : 'wrong');
+        feedback.textContent = isCorrect
+          ? '✓ 正确。' + hints[quiz.id]
+          : '✗ 再想想。提示：回顾「JWT 机制」「防伪造」「有 token 失效」「ThreadLocal 清理」「@AdminAuth」相关章节。';
+      });
+    });
+  });
+</script>
+
+<div class="lesson-footer">
+  <h3>下一步</h3>
+  <p>
+    → 上一节：<a href="0004-nacos-discovery-config.html">Nacos 注册发现</a><br>
+    → 下一节：<a href="0006-sso-oauth-jadp.html">SSO 登录链路与 JADP/OAuth2/OIDC</a>
+    （认证授权体系的第二节课——登录是怎么发生的）
+  </p>
+  <h3>推荐一手资料</h3>
+  <p>
+    <a href="https://jwt.io/">jwt.io（JWT 在线调试）</a> ·
+    <a href="https://datatracker.ietf.org/doc/html/rfc7519">JWT RFC 7519</a> ·
+    <a href="https://docs.spring.io/spring-security/reference/servlet/authentication/architecture.html">Spring Security 认证架构</a> ·
+    <a href="../../standards/sso-integration-guide.md">项目 SSO 集成指南</a>
+  </p>
+  <h3>动手练习（可选）</h3>
+  <p>
+    打开 <code>smart-square-gateway/src/main/java/com/smartsquare/gateway/auth/AuthGlobalFilter.java</code>，
+   找到 <code>resolveUser</code> 方法。注意 <code>/chat/**</code> 路径和其他路径的校验策略不同——
+    chat 只走 JADP（Host SSO），admin 先走平台 Session JWT 再回退 JADP。
+    想想：为什么 chat 和 admin 的认证策略要分开？
+  </p>
+  <h3>有疑问？</h3>
+  <p>随时向你的 AI 老师提问——比如「HS256 是什么」「为什么不用 RS256」「Redis 挂了会怎样」都可以深挖。</p>
+</div>
+
+</div>
+</body>
+</html>

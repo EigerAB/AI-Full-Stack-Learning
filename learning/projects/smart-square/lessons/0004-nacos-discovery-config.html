@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 4 课 · Nacos 注册发现与配置中心</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .annot {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    font-family: var(--sans);
+    font-size: 0.9rem;
+  }
+  .annot strong { color: #1565c0; }
+  .annot.warn {
+    border-color: var(--warn);
+    background: var(--warn-soft);
+  }
+  .annot.warn strong { color: #e65100; }
+  .diagram {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1.2rem 0;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>第 4 课 · Nacos 注册发现与配置中心</h1>
+<p class="meta">
+  课程 ·
+  <a href="0003-maven-multi-module.html">← 上一节：Maven 多模块</a> ·
+  <a href="../reference/0001-tech-stack-overview.html">全景图</a> ·
+  <a href="../MISSION.md">学习使命</a>
+</p>
+
+<blockquote>
+  目标：理解 Nacos 在这个项目里的两个角色——服务注册发现和配置管理。
+  学完后你能回答：gateway 怎么找到 admin/chat？chat 怎么调 admin？
+  多个开发者的本地服务怎么互不干扰？
+</blockquote>
+
+<h2>一、Nacos 是什么，为什么用它</h2>
+
+<p>在单体架构里，所有代码在一个进程内，方法调用就是函数调用。拆成微服务后，
+admin 在 8090、chat 在 8091、gateway 在 8081——它们怎么找到彼此？</p>
+
+<p><strong>最笨的办法</strong>：写死 IP 和端口。但服务重启可能换端口，扩容会加实例，写死根本维护不过来。</p>
+
+<p><strong>Nacos 的办法</strong>：所有服务启动时把自己注册到 Nacos（「我叫 smart-square-admin，我在 192.168.1.10:8090」），
+要调别的服务时问 Nacos（「smart-square-admin 在哪？」），Nacos 返回可用实例列表，调用方自己选一个。</p>
+
+<div class="callout">
+  <strong>Nacos 在这个项目里同时承担两个角色</strong>：
+  <ol>
+    <li><strong>服务注册发现</strong>：服务上下线时自动通知，调用方动态获取实例地址</li>
+    <li><strong>配置中心</strong>：集中管理配置，配置变更可动态推送（本项目主要用注册发现，配置仍以 yml 为主）</li>
+  </ol>
+  用一个组件解决两个问题，减少基础设施数量——这是选 Nacos 而非 Eureka + Spring Cloud Config 的原因。
+</div>
+
+<h2>二、服务注册：每个服务启动时做了什么</h2>
+
+<p>上一课你看到了 admin 启动类上的 <code>@EnableDiscoveryClient</code>。这个注解开启服务注册。
+具体注册到哪？看 <code>application-dev.yml</code>：</p>
+
+<pre><code># admin 的 application-dev.yml
+spring:
+  application:
+    name: smart-square-admin          # ← 服务名，注册到 Nacos 的名字
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:8.166.117.70:8848}   # ← Nacos 地址
+        namespace: ${NACOS_NAMESPACE:}                  # ← 命名空间（隔离用）
+        group: ${NACOS_GROUP:DEFAULT_GROUP}             # ← 分组
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:Zenflux@123}</code></pre>
+
+<div class="annot">
+  三个关键配置：
+  <ul>
+    <li><code>spring.application.name</code>——服务名，是注册到 Nacos 的唯一标识。
+    gateway 路由里写的 <code>lb://smart-square-chat</code> 用的就是这个名字</li>
+    <li><code>server-addr</code>——Nacos 服务器地址，本项目用远程的 <code>8.166.117.70:8848</code></li>
+    <li><code>namespace</code>——命名空间，<strong>隔离</strong>不同环境的服务实例</li>
+  </ul>
+</div>
+
+<p>chat 和 gateway 的配置几乎一样，只是 <code>application.name</code> 不同：</p>
+
+<pre><code># chat    → name: smart-square-chat     port: 8091
+# gateway → name: smart-square-gateway   port: 8081
+# sso     → name: smart-square-sso       port: 8095
+# admin   → name: smart-square-admin     port: 8090
+# knowledge→ name: smart-square-knowledge port: 8093</code></pre>
+
+<h2>三、命名空间隔离——多开发者互不干扰</h2>
+
+<p>这是你在本地开发时会直接遇到的问题。看 <code>local/AGENTS.md</code> 的记录：</p>
+
+<div class="annot warn">
+  <strong>真实场景</strong>：远程 Docker 容器注册到 Nacos <code>public</code> 命名空间，
+  你的本地服务如果也注册到 <code>public</code>，gateway 路由时可能把请求转发到你的本地 admin——
+  别人的请求就被你的本地服务处理了，互相干扰。
+  <br><br>
+  <strong>解决方案</strong>：本地服务注册到 <code>dev_ykh</code> 命名空间（ID: <code>cfa45b82-...</code>），
+  通过各模块的 <code>application-local.yml</code> 配置。两个命名空间的服务实例互相不可见，互不影响。
+</div>
+
+<pre><code># application-local.yml（本地开发覆盖，不入 Git）
+spring:
+  cloud:
+    nacos:
+      discovery:
+        namespace: cfa45b82-c7b7-4330-8778-4568c7b85dca   # dev_ykh
+      config:
+        namespace: cfa45b82-c7b7-4330-8778-4568c7b85dca</code></pre>
+
+<div class="callout">
+  <strong>命名空间是 Nacos 的一级隔离机制</strong>。不同命名空间的服务实例完全隔离——
+  注册不可见、发现不可见。这让你可以在本地跑一套完整的服务栈，不影响线上，也不被线上影响。
+  <br><br>
+  <strong>group</strong> 是命名空间内的二级分组，本项目都用 <code>DEFAULT_GROUP</code>，没做进一步细分。
+</div>
+
+<h2>四、服务发现：gateway 怎么找到 admin/chat</h2>
+
+<p>看 gateway 的路由配置——这是 Nacos 服务发现最直接的应用：</p>
+
+<pre><code># gateway 的 application-dev.yml
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false    # 关闭基于服务名的自动路由，只用下方显式路由
+          routes:
+            # /chat/** → smart-square-chat（SSE 长连接，禁用响应超时）
+            - id: smart-square-chat
+              uri: lb://smart-square-chat
+              predicates:
+                - Path=/chat/**
+              metadata:
+                response-timeout: -1
+
+            # /sso/** → smart-square-sso
+            - id: smart-square-sso
+              uri: lb://smart-square-sso
+              predicates:
+                - Path=/sso/**
+
+            # 其余全部流量 → smart-square-admin（catch-all，必须放最后）
+            - id: smart-square-admin
+              uri: lb://smart-square-admin
+              predicates:
+                - Path=/**</code></pre>
+
+<div class="annot">
+  <strong><code>lb://smart-square-chat</code> 是什么意思</strong>：
+  <ul>
+    <li><code>lb</code> = Load Balancer，告诉 gateway「这不是固定地址，要去 Nacos 查」</li>
+    <li><code>smart-square-chat</code> = 要查的服务名（就是 chat 注册时的 <code>spring.application.name</code>）</li>
+    <li>gateway 启动时从 Nacos 拉取服务实例列表，请求来时按负载均衡策略选一个实例转发</li>
+  </ul>
+  如果 chat 部署了 3 个实例，gateway 会自动在 3 个之间轮询——<strong>这就是微服务扩容的基础</strong>。
+</div>
+
+<div class="annot warn">
+  <strong>路由顺序很重要</strong>：<code>Path=/**</code> 的 catch-all 路由<strong>必须放最后</strong>。
+  Spring Cloud Gateway 按声明顺序匹配，如果 catch-all 在前面，所有请求都会被它吃掉，
+  <code>/chat/**</code> 和 <code>/sso/**</code> 永远匹配不到。
+</div>
+
+<div class="annot">
+  <strong>SSE 路由的特殊处理</strong>：<code>/chat/**</code> 和 <code>/knowledge/qa/**</code> 路由设了
+  <code>response-timeout: -1</code>（禁用超时）。因为 AI 对话是 SSE 流式长连接——
+  模型生成一个字就推一个字，可能持续几十秒。如果用默认的 30 秒超时，对话还没完就被 gateway 切断了。
+</div>
+
+<h2>五、服务间调用：chat 怎么调 admin</h2>
+
+<p>gateway → admin/chat 是「外部请求经网关路由」。但 chat 还要调 admin 拿产品数据——
+这是<strong>服务间调用</strong>，用 OpenFeign。看真实代码：</p>
+
+<h3>1. Feign 客户端接口（chat 侧）</h3>
+
+<pre><code>// chat 模块：ProductClient.java
+@FeignClient(name = "${internal.server-service:smart-square-admin}", contextId = "productClient")
+public interface ProductClient {
+
+    @GetMapping("/internal/products/{productId}")
+    Response&lt;ProductBriefResult&gt; getProduct(@PathVariable("productId") String productId);
+
+    @GetMapping("/internal/products/batch")
+    Response&lt;List&lt;ProductBriefResult&gt;&gt; getProducts(@RequestParam("ids") List&lt;String&gt; ids);
+}</code></pre>
+
+<div class="annot">
+  <strong>Feign 的「魔法」</strong>：你只写接口，不写实现。Feign 在运行时自动生成实现类：
+  <ul>
+    <li><code>@FeignClient(name = "smart-square-admin")</code>——告诉 Feign 调用名为 <code>smart-square-admin</code> 的服务</li>
+    <li><code>@GetMapping("/internal/products/{productId}")</code>——调用时发 HTTP GET 请求到这个路径</li>
+    <li>服务名 <code>smart-square-admin</code> 通过 Nacos 解析成实际 IP:端口</li>
+    <li>返回值 <code>Response&lt;ProductBriefResult&gt;</code> 自动反序列化</li>
+  </ul>
+  对你来说就像调本地方法，实际是跨进程 HTTP 调用。这就是「声明式 HTTP 客户端」。
+</div>
+
+<h3>2. 被调方接口（admin 侧）</h3>
+
+<pre><code>// admin 模块：ChatInternalController.java
+@RestController
+@RequestMapping("/internal")
+public class ChatInternalController {
+
+    @GetMapping("/products/{productId}")
+    @PublicAccess
+    public ProductBriefResult getProduct(@PathVariable String productId) {
+        // 查数据库返回产品概要
+    }
+}</code></pre>
+
+<div class="annot">
+  <strong>为什么 internal 接口标 <code>@PublicAccess</code></strong>：
+  <code>/internal/**</code> 端点<strong>仅集群内可达、不经网关对外暴露</strong>。
+  它不走外部鉴权（因为只有 chat 通过 Feign 调它，不是终端用户直接调）。
+  <code>@PublicAccess</code> 让它跳过对外鉴权，但身份信息通过<strong>可信头透传</strong>（下面讲）。
+</div>
+
+<h3>3. 身份头透传——Feign 拦截器</h3>
+
+<p>chat 调 admin 时，admin 怎么知道是哪个用户在操作？答案：<strong>透传网关注入的可信身份头</strong>。</p>
+
+<pre><code>// chat 模块：FeignIdentityHeaderInterceptor.java
+@Component
+public class FeignIdentityHeaderInterceptor implements RequestInterceptor {
+
+    private static final String[] PROPAGATED_HEADERS = {
+        TrustedHeaders.USER_ID,      // X-User-Id
+        TrustedHeaders.USER_TYPE,    // X-User-Type
+        TrustedHeaders.ORG_CODE,     // X-Org-Code
+        TrustedHeaders.USER_NAME,    // X-User-Name
+        TrustedHeaders.TRACE_ID      // X-Trace-Id
+    };
+
+    @Override
+    public void apply(RequestTemplate template) {
+        HttpServletRequest request = currentRequest();  // 拿到 chat 当前收到的请求
+        if (request == null) return;
+        for (String header : PROPAGATED_HEADERS) {
+            String value = request.getHeader(header);
+            if (StrUtil.isNotBlank(value)) {
+                template.header(header, value);  // 透传给 admin
+            }
+        }
+    }
+}</code></pre>
+
+<div class="callout">
+  <strong>完整的身份传递链</strong>：
+  <ol>
+    <li>用户请求到 <strong>gateway</strong>，gateway 校验 JWT/JADP，注入 <code>X-User-Id</code> 等可信头</li>
+    <li>gateway 转发给 <strong>chat</strong>，chat 收到带可信头的请求</li>
+    <li>chat 通过 Feign 调 <strong>admin</strong>，<code>FeignIdentityHeaderInterceptor</code> 把可信头原样透传</li>
+    <li>admin 收到 <code>/internal/**</code> 请求，从可信头还原用户身份，做权限过滤</li>
+  </ol>
+  <strong>关键前提</strong>：下游服务信任这些头，是因为网关在转发前<strong>剥离了外部伪造的同名头</strong>，
+  且下游不可绕过网关直达（由部署层网络策略保证）。这就是 <code>TrustedHeaders</code> 类注释里写的约定。
+</div>
+
+<h2>六、可信头——TrustedHeaders 常量</h2>
+
+<p>所有可信头定义在 common 模块的 <code>TrustedHeaders.java</code>，供 gateway/admin/chat 共享：</p>
+
+<table>
+<thead><tr><th>头名</th><th>含义</th><th>谁注入</th></tr></thead>
+<tbody>
+<tr><td><code>X-User-Id</code></td><td>用户唯一标识</td><td>gateway</td></tr>
+<tr><td><code>X-User-Name</code></td><td>用户姓名</td><td>gateway</td></tr>
+<tr><td><code>X-Org-Code</code></td><td>所属组织编码</td><td>gateway</td></tr>
+<tr><td><code>X-User-Type</code></td><td>用户类型（ADMIN/DEVELOPER/ASSISTANT）</td><td>gateway</td></tr>
+<tr><td><code>X-User-Roles</code></td><td>角色编码列表（逗号分隔）</td><td>gateway</td></tr>
+<tr><td><code>X-User-Role-Names</code></td><td>角色名称列表（角色判定的唯一判据）</td><td>gateway</td></tr>
+<tr><td><code>X-Trace-Id</code></td><td>全链路追踪 ID</td><td>gateway</td></tr>
+<tr><td><code>X-Open-Client-Id</code></td><td>开放 API 客户端标识</td><td>gateway</td></tr>
+</tbody>
+</table>
+
+<div class="annot">
+  <strong>为什么角色判定用 roleName 而非 roleId</strong>：JADP 的 roleId 是不可读随机串
+  （如 <code>47DB3AED9CE544009D3209CF67717402</code>），不适合写进配置。
+  所以角色相关配置一律以角色名表达（如「应用广场超级管理员」），
+  <code>X-User-Role-Names</code> 头承载角色名列表，是平台各处角色判定的<strong>唯一判据</strong>。
+</div>
+
+<h2>七、整体请求流转图</h2>
+
+<div class="diagram">用户浏览器
+    │
+    │ POST /chat/messages (带 JWT)
+    ▼
+┌──────────────────────────────────────────┐
+│  gateway (:8081)                         │
+│  · AuthGlobalFilter 校验 JWT             │
+│  · 剥离外部伪造的 X-User-* 头             │
+│  · 注入可信头 X-User-Id / X-User-Type... │
+│  · 路由：/chat/** → lb://smart-square-chat│
+└──────────────────┬───────────────────────┘
+                   │ Nacos 查到 chat 在 192.168.x.x:8091
+                   │ 转发请求 + 可信头
+                   ▼
+┌──────────────────────────────────────────┐
+│  chat (:8091)                            │
+│  · ChatMessageController 收到请求         │
+│  · 需要查产品信息                         │
+│  · 调用 ProductClient.getProduct(id)     │
+│  · FeignIdentityHeaderInterceptor 透传头  │
+└──────────────────┬───────────────────────┘
+                   │ Feign → Nacos 查到 admin 在 192.168.x.x:8090
+                   │ HTTP GET /internal/products/{id} + 可信头
+                   ▼
+┌──────────────────────────────────────────┐
+│  admin (:8090)                           │
+│  · ChatInternalController 收到请求        │
+│  · @PublicAccess 跳过对外鉴权             │
+│  · 从可信头还原用户身份                    │
+│  · 查数据库返回产品概要                    │
+└──────────────────────────────────────────┘</div>
+
+<h2>八、本课要点回顾</h2>
+
+<table>
+<thead><tr><th>概念</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td>Nacos 双角色</td><td>服务注册发现 + 配置中心，一个组件解决两个问题</td></tr>
+<tr><td>服务注册</td><td><code>@EnableDiscoveryClient</code> + <code>spring.application.name</code> + Nacos 地址</td></tr>
+<tr><td>命名空间隔离</td><td>本地用 <code>dev_ykh</code>，线上用 <code>public</code>，互不可见</td></tr>
+<tr><td>gateway 路由</td><td><code>lb://服务名</code> 通过 Nacos 解析，catch-all 放最后</td></tr>
+<tr><td>SSE 超时</td><td><code>/chat/**</code> 路由 <code>response-timeout: -1</code>，适配流式长连接</td></tr>
+<tr><td>服务间调用</td><td>chat 用 OpenFeign 声明式调 admin，像调本地方法</td></tr>
+<tr><td>internal 接口</td><td><code>/internal/**</code> 前缀，<code>@PublicAccess</code> 跳过对外鉴权，仅集群内可达</td></tr>
+<tr><td>身份透传</td><td>FeignIdentityHeaderInterceptor 把可信头从 chat 透传给 admin</td></tr>
+<tr><td>可信头约定</td><td>gateway 剥离伪造头 + 注入真实头，下游信任，网络策略保证不可绕过</td></tr>
+</tbody>
+</table>
+
+<!-- 互动测验 -->
+<div class="quiz" id="q1">
+  <q>问题 1：gateway 路由配置里 lb://smart-square-chat 中的 lb 是什么含义？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q1" data-correct="false">local bridge，本地桥接协议</label></li>
+    <li><label><input type="radio" name="q1" data-correct="true">Load Balancer，表示要通过 Nacos 服务发现解析实际地址并负载均衡</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">loopback，回环地址 127.0.0.1 的缩写</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">label，路由标签</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q2">
+  <q>问题 2：你的本地服务和远程 Docker 容器都注册到同一个 Nacos，怎么避免互相干扰？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q2" data-correct="false">用不同的 spring.application.name</label></li>
+    <li><label><input type="radio" name="q2" data-correct="true">用不同的 namespace（命名空间），如本地用 dev_ykh，远程用 public</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">用不同的 group</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">用不同的 server.port</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q3">
+  <q>问题 3：chat 通过 Feign 调 admin 的 /internal/products/{id}，admin 怎么知道是哪个用户在操作？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q3" data-correct="false">chat 把用户的 JWT token 原样转发给 admin</label></li>
+    <li><label><input type="radio" name="q3" data-correct="true">FeignIdentityHeaderInterceptor 把网关注入的 X-User-* 可信头透传给 admin</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">admin 不需要知道用户身份，internal 接口不做权限过滤</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">chat 把用户 ID 作为请求参数传给 admin</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q4">
+  <q>问题 4：gateway 路由配置中，Path=/** 的 catch-all 路由为什么必须放最后？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q4" data-correct="false">Maven 构建顺序要求路由按字母排列</label></li>
+    <li><label><input type="radio" name="q4" data-correct="true">Spring Cloud Gateway 按声明顺序匹配，catch-all 在前面会吃掉所有请求，/chat/** 等永远匹配不到</label></li>
+    <li><label><input type="radio" name="q4" data-correct="false">Nacos 要求路由按优先级注册</label></li>
+    <li><label><input type="radio" name="q4" data-correct="false">放最后是为了性能优化</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<script>
+  const hints = {
+    q1: 'lb 是 Load Balancer 的缩写。uri 写 lb://服务名 时，gateway 知道这不是固定地址，要去 Nacos 查这个服务的实例列表，然后按负载均衡策略选一个转发。',
+    q2: 'namespace（命名空间）是 Nacos 的一级隔离机制。不同命名空间的服务实例完全互相不可见。本地用 dev_ykh 命名空间，远程用 public，两套服务栈互不影响。',
+    q3: 'gateway 在入口校验身份后注入 X-User-Id 等可信头。chat 收到请求时这些头就在请求里。FeignIdentityHeaderInterceptor 作为 RequestInterceptor，在 Feign 发请求给 admin 前把这些头原样加上。admin 从头里还原身份。',
+    q4: 'Spring Cloud Gateway 的路由匹配是按声明顺序的。Path=/** 匹配所有路径，如果它在前面，后面的 /chat/**、/sso/** 永远没有机会被匹配。所以越具体的路由越要放前面，catch-all 放最后。'
+  };
+  document.querySelectorAll('.quiz').forEach(quiz => {
+    const options = quiz.querySelectorAll('input[type="radio"]');
+    const feedback = quiz.querySelector('.feedback');
+    options.forEach(opt => {
+      opt.addEventListener('change', () => {
+        const isCorrect = opt.dataset.correct === 'true';
+        feedback.className = 'feedback ' + (isCorrect ? 'correct' : 'wrong');
+        feedback.textContent = isCorrect
+          ? '✓ 正确。' + hints[quiz.id]
+          : '✗ 再想想。提示：回顾「服务发现」「命名空间隔离」「身份头透传」「路由顺序」相关章节。';
+      });
+    });
+  });
+</script>
+
+<div class="lesson-footer">
+  <h3>下一步</h3>
+  <p>
+    → 上一节：<a href="0003-maven-multi-module.html">Maven 多模块</a><br>
+    → 下一节：<a href="0005-gateway-filter-auth.html">Spring Cloud Gateway 过滤器与鉴权</a>
+    （进入认证授权体系的前半段——网关侧）
+  </p>
+  <h3>推荐一手资料</h3>
+  <p>
+    <a href="https://nacos.io/zh-cn/docs/v3/quick-start.html">Nacos 3.x 官方文档</a> ·
+    <a href="https://docs.spring.io/spring-cloud-gateway/reference/spring-cloud-gateway.html">Spring Cloud Gateway 官方文档</a> ·
+    <a href="https://docs.spring.io/spring-cloud-openfeign/reference/">Spring Cloud OpenFeign 官方文档</a> ·
+    <a href="https://sca.aliyun.com/">Spring Cloud Alibaba 参考文档</a>
+  </p>
+  <h3>动手练习（可选）</h3>
+  <p>
+    打开 <code>smart-square-chat/src/main/resources/application-dev.yml</code>，找到
+    <code>internal.server-service</code> 配置。再打开 <code>ProductClient.java</code>，
+    看 <code>@FeignClient(name = "${internal.server-service:smart-square-admin}")</code>——
+    这个占位符怎么把 yml 配置和 Feign 客户端关联起来的？
+  </p>
+  <h3>有疑问？</h3>
+  <p>随时向你的 AI 老师提问——比如「Nacos 挂了会怎样」「Feign 怎么做负载均衡」「为什么不用 RestTemplate」都可以深挖。</p>
+</div>
+
+</div>
+</body>
+</html>

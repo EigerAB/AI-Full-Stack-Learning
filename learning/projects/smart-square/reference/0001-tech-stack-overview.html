@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartSquare 后端技术栈全景图</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  /* 全景图专用：分层卡片 */
+  .layer {
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 1.2rem 0;
+    background: #fff;
+  }
+  .layer h3 { margin-top: 0; }
+  .layer.gw { border-left: 4px solid #4CAF50; }
+  .layer.biz { border-left: 4px solid #2196F3; }
+  .layer.infra { border-left: 4px solid #9C27B0; }
+  .layer.data { border-left: 4px solid #FF9800; }
+  .layer.ops { border-left: 4px solid #607D8B; }
+  .tech-tag {
+    display: inline-block;
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    padding: 0.15em 0.5em;
+    margin: 0.15em 0.2em;
+    border-radius: 3px;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+  }
+  .arch-diagram {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1.5rem 0;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>SmartSquare 后端技术栈全景图</h1>
+<p class="meta">
+  参考文档 · 课程首页 ·
+  <a href="../MISSION.md">学习使命</a> ·
+  <a href="../RESOURCES.md">资源列表</a>
+</p>
+
+<blockquote>
+  这张图是整个课程的导航地图。先建立整体认知，后续每节课都会深入其中某一层。
+  阅读时重点关注「为什么选这个技术」和「它在这个项目里负责什么」，而不只是记名字。
+</blockquote>
+
+<h2>一、它是什么</h2>
+
+<p>SmartSquare 是一个 <strong>AI 开放平台</strong>，把 LLM、MCP Server、Agent、Skill、Tool 等 AI 能力
+统一管理、分发、计量。它同时提供 AI 编程助手（云端沙箱编程）和智能对话助手（AG-UI 协议流式对话）。</p>
+
+<p>后端是一个 <strong>Maven 多模块微服务架构</strong>，从早期的 dal/server/bootstrap 三层单体
+<strong>演进</strong>而来，现在拆成网关 + 主服务 + 对话微服务 + 公共库 + gRPC 契约五个核心模块，
+经 Nacos3 注册与发现。</p>
+
+<h2>二、架构总览图</h2>
+
+<div class="arch-diagram">┌─────────────────────────────────────────────────────────────┐
+│                    外部客户端 / 浏览器                        │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ HTTP / WebSocket
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│         smart-square-gateway  (统一入口网关, :8081)           │
+│  Spring Cloud Gateway (WebFlux 响应式)                       │
+│  · AuthGlobalFilter  集中鉴权 (JADP / JWT / SSO)             │
+│  · 注入可信身份头 X-User-* → 转发给下游                       │
+│  · 不承载业务逻辑                                             │
+└──────────┬──────────────────────────────┬───────────────────┘
+           │ 经 Nacos 路由                 │
+           ▼                              ▼
+┌──────────────────────┐      ┌──────────────────────────────┐
+│ smart-square-admin   │      │ smart-square-chat            │
+│ 主服务 (:8090)        │◄─────│ 对话微服务 (:8091)            │
+│ · 32+ REST Controller│ Feign│ · AG-UI 协议 SSE 流式对话     │
+│ · 业务实体/Service    │ 调用 │ · A2A 协议对接外部智能体       │
+│ · Flyway 迁移入口     │      │ · 意图识别 gRPC 调用           │
+│ · 智能编码 WebSocket  │      │ · 独立数据库表                │
+│ · MCP Server 托管    │      └──────────────────────────────┘
+└──────────┬───────────┘                   │
+           │ 依赖                           │ gRPC
+           ▼                               ▼
+┌──────────────────────┐      ┌──────────────────────────────┐
+│ smart-square-common  │      │ smart-square-proto           │
+│ 公共基础设施          │      │ gRPC 契约 (.proto)            │
+│ · 统一响应/异常        │      │ · 意图识别消息定义             │
+│ · 鉴权上下文          │      │ · 编译生成 stub 供两端共享     │
+│ · 领域事件定义         │      └──────────────────────────────┘
+│ · 通用工具/转换器      │
+└──────────────────────┘</div>
+
+<h2>三、技术栈分层</h2>
+
+<div class="layer gw">
+<h3>1. 网关层 — 统一入口</h3>
+<p>负责：集中鉴权、身份注入、路由转发。不写业务逻辑。</p>
+<p>
+  <span class="tech-tag">Spring Cloud Gateway</span>
+  <span class="tech-tag">WebFlux (响应式)</span>
+  <span class="tech-tag">Reactor</span>
+  <span class="tech-tag">Nacos 3.2.1 服务发现</span>
+</p>
+<ul>
+  <li><strong>为什么用 WebFlux 而不是 WebMVC</strong>：网关要做大量非阻塞转发，响应式模型天然适合；且 Spring Cloud Gateway 本身就是基于 WebFlux 构建。</li>
+  <li><strong>为什么鉴权集中在网关</strong>：下游服务可以信任网关注入的 <code>X-User-*</code> 头，不必每个服务重复实现 JADP/JWT 校验逻辑。</li>
+</ul>
+</div>
+
+<div class="layer biz">
+<h3>2. 业务层 — 主服务与对话微服务</h3>
+<p>负责：所有业务逻辑、REST API、AI 对话编排、智能编码。</p>
+<p>
+  <span class="tech-tag">Spring Boot 3.5.9</span>
+  <span class="tech-tag">Spring Web MVC</span>
+  <span class="tech-tag">Spring Security</span>
+  <span class="tech-tag">Spring Cloud OpenFeign</span>
+  <span class="tech-tag">Spring AI 1.1.8</span>
+  <span class="tech-tag">OpenAI Java SDK 4.6.1</span>
+  <span class="tech-tag">DashScope 2.22.4</span>
+  <span class="tech-tag">Google GenAI 1.34.0</span>
+  <span class="tech-tag">gRPC 1.60.1</span>
+  <span class="tech-tag">Protobuf 3.25.2</span>
+</p>
+<ul>
+  <li><strong>为什么 admin 用 WebMVC 而 gateway 用 WebFlux</strong>：admin 承载传统 CRUD 业务，阻塞式模型更简单直观；gateway 才需要响应式做高并发转发。两种模型在同一个系统里按职责分工。</li>
+  <li><strong>为什么 chat 拆成独立微服务</strong>：AI 对话是长连接、流式、重 IO 的场景，与 admin 的 CRUD 负载特征完全不同，独立部署便于独立扩缩容和故障隔离。</li>
+  <li><strong>为什么 chat 用 OpenFeign 调 admin 而不直连数据库</strong>：保持数据归属唯一——Product/权限数据归 admin 管，chat 只能通过接口拿，避免数据库耦合。</li>
+  <li><strong>为什么用 gRPC 做意图识别</strong>：意图识别是高频、低延迟的跨服务调用，gRPC 的二进制协议比 HTTP/JSON 更省带宽、更快。</li>
+  <li><strong>为什么集成 3 个 AI SDK</strong>：OpenAI / DashScope(通义) / Google Gemini 对接不同模型供应商，平台要支持多模型分发。</li>
+</ul>
+</div>
+
+<div class="layer infra">
+<h3>3. 公共基础设施层 — 共享契约</h3>
+<p>负责：admin 与 chat 共享的工具、响应格式、事件定义、gRPC 契约。</p>
+<p>
+  <span class="tech-tag">Hutool 5.8.33</span>
+  <span class="tech-tag">Caffeine 3.2.3 (本地缓存)</span>
+  <span class="tech-tag">OkHttp 4.12.0</span>
+  <span class="tech-tag">Guava Retrying 2.0.0</span>
+  <span class="tech-tag">BouncyCastle 1.78 (加密)</span>
+  <span class="tech-tag">Apache Tika 2.9.2 (文档解析)</span>
+  <span class="tech-tag">MinIO 8.5.17 (对象存储)</span>
+</p>
+<ul>
+  <li><strong>为什么单独抽 common 模块</strong>：避免 admin 和 chat 各自重复造轮子，统一响应格式 <code>Response&lt;T&gt;</code> 和异常体系，让前端对接一致。</li>
+  <li><strong>为什么 gRPC 契约单独成模块</strong>：<code>.proto</code> 文件编译出的 stub 要被 admin 和 chat 同时依赖，单独模块让两边引用同一份契约，避免定义漂移。</li>
+  <li><strong>为什么用 Caffeine 而不是 Redis 做本地缓存</strong>：高频读取且不需要跨实例一致的数据（如配置元数据）用本地缓存更快；跨实例共享的才用 Redis。</li>
+</ul>
+</div>
+
+<div class="layer data">
+<h3>4. 数据层 — 持久化与迁移</h3>
+<p>负责：ORM、数据库、结构演进。</p>
+<p>
+  <span class="tech-tag">MyBatis-Plus 3.5.9</span>
+  <span class="tech-tag">DM8 达梦数据库</span>
+  <span class="tech-tag">Flyway 10.15.0</span>
+  <span class="tech-tag">db-migration-dameng-flyway</span>
+  <span class="tech-tag">Redis (会话/缓存)</span>
+</p>
+<ul>
+  <li><strong>为什么用 MyBatis-Plus 而不是 JPA/Hibernate</strong>：MyBatis-Plus 对 SQL 的控制更精细，适配国产数据库达梦的方言更灵活；JPA 的自动建表在国产库上兼容性差。</li>
+  <li><strong>为什么用达梦而不是 MySQL</strong>：信创/国产化要求——金融、政企场景通常强制要求国产数据库。</li>
+  <li><strong>为什么用 Flyway 而不是自动建表</strong>：数据库结构变更必须可追溯、可回滚、可审计，Flyway 的版本化迁移脚本让 schema 演进有据可查。</li>
+  <li><strong>为什么需要 db-migration-dameng-flyway 适配包</strong>：Flyway 官方不直接支持达梦，这个第三方包补上了达梦方言支持。</li>
+</ul>
+</div>
+
+<div class="layer ops">
+<h3>5. 运维与质量层</h3>
+<p>负责：部署、文档、代码质量、测试。</p>
+<p>
+  <span class="tech-tag">Maven 多模块</span>
+  <span class="tech-tag">Spotless + Google Java Format (AOSP)</span>
+  <span class="tech-tag">JUnit + jqwik 1.9.2 (属性测试)</span>
+  <span class="tech-tag">springdoc-openapi 2.8.17</span>
+  <span class="tech-tag">Docker Compose / Helm / Podman</span>
+  <span class="tech-tag">Nacos 3.2.1 (注册+配置)</span>
+  <span class="tech-tag">Fabric8 K8s Client</span>
+  <span class="tech-tag">Aliyun SLS (日志可观测)</span>
+</p>
+<ul>
+  <li><strong>为什么用 Spotless 而不是 Checkstyle</strong>：Spotless 能直接用 Google Java Format <em>自动格式化</em>代码，不只是检查；CI 上 <code>make lint-fix</code> 一键修复，降低格式争议。</li>
+  <li><strong>为什么用 jqwik 做属性测试</strong>：传统单元测试只能覆盖想到的 case，属性测试让框架自动生成大量随机输入，更容易暴露边界 bug。</li>
+  <li><strong>为什么三种部署方式</strong>：Docker Compose 给开发本地、Helm 给生产 K8s、Podman 给无 Docker 环境，按场景选择。</li>
+</ul>
+</div>
+
+<h2>四、关键架构设计决策一览</h2>
+
+<table>
+<thead>
+<tr><th>设计决策</th><th>选择</th><th>核心原因</th></tr>
+</thead>
+<tbody>
+<tr><td>服务拆分</td><td>网关 + 主服务 + 对话微服务</td><td>按负载特征隔离：CRUD vs 长连接流式</td></tr>
+<tr><td>服务发现</td><td>Nacos 3.2.1</td><td>同时做注册中心和配置中心，减少组件数</td></tr>
+<tr><td>网关模型</td><td>WebFlux 响应式</td><td>高并发非阻塞转发</td></tr>
+<tr><td>业务模型</td><td>WebMVC 阻塞式</td><td>CRUD 场景简单直观</td></tr>
+<tr><td>跨服务调用</td><td>OpenFeign (HTTP) + gRPC</td><td>业务数据走 Feign，低延迟意图识别走 gRPC</td></tr>
+<tr><td>鉴权位置</td><td>网关集中 + 下游注解</td><td>网关注入可信头，下游用 <code>@AdminAuth</code> 等注解做角色控制</td></tr>
+<tr><td>数据库</td><td>达梦 DM8</td><td>信创国产化要求</td></tr>
+<tr><td>ORM</td><td>MyBatis-Plus</td><td>SQL 可控，国产库方言适配灵活</td></tr>
+<tr><td>Schema 演进</td><td>Flyway 版本化迁移</td><td>结构变更可追溯可审计</td></tr>
+<tr><td>模块间通信</td><td>Spring Events 领域事件</td><td>松耦合，删除等操作触发跨域清理</td></tr>
+<tr><td>统一响应</td><td>ResponseAdvice 自动包装</td><td>Controller 直接返回业务对象，框架统一包 <code>Response&lt;T&gt;</code></td></tr>
+<tr><td>异常处理</td><td>ExceptionAdvice + BusinessException</td><td>禁止用 null 表示业务错误，统一抛异常</td></tr>
+<tr><td>AI 对话协议</td><td>AG-UI (SSE) + A2A (JSONRPC)</td><td>AG-UI 给前端流式事件，A2A 对接外部智能体</td></tr>
+<tr><td>智能编码</td><td>WebSocket + JSON-RPC 2.0</td><td>双向实时通信，远程沙箱编程</td></tr>
+<tr><td>代码格式</td><td>Spotless + Google Java Format</td><td>自动格式化，消除风格争议</td></tr>
+</tbody>
+</table>
+
+<h2>五、模块速查</h2>
+
+<table>
+<thead>
+<tr><th>模块</th><th>端口</th><th>一句话职责</th></tr>
+</thead>
+<tbody>
+<tr><td><code>smart-square-gateway</code></td><td>8081</td><td>唯一外部入口，集中鉴权 + 路由</td></tr>
+<tr><td><code>smart-square-admin</code></td><td>8090</td><td>主服务，32+ Controller，业务实体/Service/Flyway 入口</td></tr>
+<tr><td><code>smart-square-chat</code></td><td>8091</td><td>对话微服务，AG-UI/A2A 编排，独立数据库</td></tr>
+<tr><td><code>smart-square-common</code></td><td>—</td><td>共享库：统一响应/异常/事件/工具</td></tr>
+<tr><td><code>smart-square-proto</code></td><td>—</td><td>gRPC 契约，编译生成 stub</td></tr>
+<tr><td><code>smart-square-sso</code></td><td>8095</td><td>单点登录服务</td></tr>
+<tr><td><code>smart-square-knowledge</code></td><td>8093</td><td>知识库服务</td></tr>
+</tbody>
+</table>
+
+<h2>六、学习路径建议</h2>
+
+<div class="callout">
+  按你选的优先方向，建议这样推进（每节课 15-20 分钟）：
+  <ol>
+    <li><strong>本图</strong>——先记住五层结构和「为什么」</li>
+    <li>Spring Boot 基础锚定到 admin 的 <code>application.yml</code> 和一个 Controller 链路</li>
+    <li>微服务架构：Maven 多模块 → Nacos → Gateway → OpenFeign</li>
+    <li>认证授权：JWT → AuthGlobalFilter → 角色注解 → SSO/OAuth2</li>
+    <li>（后续）AI 协议、智能编码、数据持久化、可观测</li>
+  </ol>
+</div>
+
+<div class="lesson-footer">
+  <h3>下一步</h3>
+  <p>
+    → 上一节：无（这是起点）<br>
+    → 下一节：<a href="../lessons/0002-spring-boot-basics-in-admin.html">Spring Boot 基础锚定到 admin 模块</a>
+  </p>
+  <h3>推荐一手资料</h3>
+  <p>
+    <a href="../../ARCHITECTURE.md">项目架构文档</a>（最权威）·
+    <a href="../../../AGENTS.md">AGENTS.md 项目概览</a> ·
+    <a href="https://docs.spring.io/spring-boot/docs/3.5.x/reference/htmlsingle/">Spring Boot 3.5 官方文档</a>
+  </p>
+  <h3>有疑问？</h3>
+  <p>随时向你的 AI 老师提问——任何概念不清楚、任何「为什么」想深挖，直接问。</p>
+</div>
+
+</div>
+</body>
+</html>

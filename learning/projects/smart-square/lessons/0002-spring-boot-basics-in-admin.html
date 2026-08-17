@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 2 课 · Spring Boot 基础锚定到 admin 模块</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .annot {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    font-family: var(--sans);
+    font-size: 0.9rem;
+  }
+  .annot strong { color: #1565c0; }
+  .flow {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1.2rem 0;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .step-num {
+    display: inline-block;
+    width: 1.5em;
+    color: var(--accent);
+    font-weight: 700;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>第 2 课 · Spring Boot 基础锚定到 admin 模块</h1>
+<p class="meta">
+  课程 ·
+  <a href="../reference/0001-tech-stack-overview.html">← 上一节：技术栈全景</a> ·
+  <a href="../MISSION.md">学习使命</a> ·
+  <a href="../RESOURCES.md">资源</a>
+</p>
+
+<blockquote>
+  目标：通过 admin 模块的真实代码，理解 Spring Boot 的三个核心机制——
+  <strong>自动配置</strong>、<strong>分层架构</strong>、<strong>统一响应</strong>。
+  学完后你能看懂一个请求从进来到出去经历了什么。
+</blockquote>
+
+<h2>一、起点：启动类上的注解</h2>
+
+<p>打开 <code>smart-square-admin/src/main/java/com/smartsquare/SmartSquareAdminApplication.java</code>，
+整个应用就从这里启动。一个类、六个注解、一行 <code>main</code>，但每个注解都在开启一整块能力：</p>
+
+<pre><code>@SpringBootApplication
+@EnableScheduling
+@EnableDiscoveryClient
+@EnableFeignClients(basePackages = "com.smartsquare")
+@EnableConfigurationProperties({AcpProperties.class})
+@MapperScan("com.smartsquare.mapper")
+public class SmartSquareAdminApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(SmartSquareAdminApplication.class, args);
+    }
+}</code></pre>
+
+<div class="annot">
+  <strong><span class="step-num">1</span>@SpringBootApplication</strong>——这是 Spring Boot 的「一键启动」。
+  它其实是三个注解的合体：<code>@SpringBootConfiguration</code>（标记配置类）+
+  <code>@EnableAutoConfiguration</code>（自动配置）+ <code>@ComponentScan</code>（组件扫描）。
+  <br><br>
+  <strong>自动配置</strong>是 Spring Boot 最核心的能力：你引入了 <code>spring-boot-starter-web</code>，
+  它就自动配好内嵌 Tomcat、DispatcherServlet、JSON 序列化；你引入了 <code>mybatis-plus</code>，
+  它就自动配好 SqlSessionFactory。你不用写一行 XML 配置。
+  <br><br>
+  <strong>组件扫描</strong>会扫描 <code>com.smartsquare</code> 包下所有带 <code>@Controller</code>、
+  <code>@Service</code>、<code>@Component</code>、<code>@Configuration</code> 的类，把它们注册成 Bean。
+  这就是为什么你只要给类加个 <code>@Service</code> 注解，就能在其他地方 <code>@RequiredArgsConstructor</code> 注入它。
+</div>
+
+<div class="annot">
+  <strong><span class="step-num">2</span>@EnableDiscoveryClient</strong>——开启服务注册发现，把自己注册到 Nacos，
+  让 gateway 能通过 Nacos 找到 admin。这是微服务架构的关键，下一阶段细讲。
+</div>
+
+<div class="annot">
+  <strong><span class="step-num">3</span>@EnableFeignClients</strong>——开启声明式 HTTP 客户端，
+  让 admin 能用接口调其他服务。本项目里 chat 微服务会用 Feign 调 admin。
+</div>
+
+<div class="annot">
+  <strong><span class="step-num">4</span>@MapperScan("com.smartsquare.mapper")</strong>——告诉 MyBatis-Plus
+  去哪个包扫描 Mapper 接口。Mapper 是数据访问层，等会儿在三层架构里会看到它。
+</div>
+
+<div class="annot">
+  <strong><span class="step-num">5</span>@EnableConfigurationProperties({AcpProperties.class})</strong>——
+  把 <code>application.yml</code> 里 <code>acp:</code> 那段配置绑定到 <code>AcpProperties</code> Java 类。
+  这是 Spring Boot「配置即类型」的体现：yml 里的字符串变成有类型的 Java 对象，带 IDE 提示和校验。
+</div>
+
+<div class="callout">
+  <strong>关键认知</strong>：Spring Boot 的「魔法」不是魔法，是「约定优于配置」——
+  你按它的约定放注解、放包结构，它就自动帮你配好基础设施。理解了这一点，看任何 Spring Boot 项目都不会慌。
+</div>
+
+<h2>二、配置文件：application.yml 的分层设计</h2>
+
+<p>Spring Boot 的配置是<strong>分环境</strong>的。看 admin 的 resources 目录：</p>
+
+<pre><code>application.yml        ← 入口，只选 profile
+application-dev.yml     ← 开发环境
+application-nwtest.yml  ← 内网测试
+application-h2.yml      ← 内存库（本地调试）
+application-local.yml   ← 个人覆盖（不入 Git，打包排除）</code></pre>
+
+<p><code>application.yml</code> 只有一行有用的：</p>
+
+<pre><code>spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}</code></pre>
+
+<div class="annot">
+  <strong>${SPRING_PROFILES_ACTIVE:dev}</strong> 是 Spring 的占位符语法：
+  <code>${环境变量名:默认值}</code>。优先读环境变量 <code>SPRING_PROFILES_ACTIVE</code>，
+  没设就用默认值 <code>dev</code>。这样线上不用重新打包，改环境变量就能切配置。
+</div>
+
+<p>真正的配置在 <code>application-dev.yml</code> 里。看几个关键段：</p>
+
+<h3>数据源——达梦数据库</h3>
+<pre><code>spring:
+  datasource:
+    url: jdbc:dm://${db.host}:${db.port}/${db.name}
+    driver-class-name: dm.jdbc.driver.DmDriver
+db:
+   host: ${DB_HOST:8.166.117.70}
+   port: ${DB_PORT:5236}
+   name: ${DB_NAME:SMARTSQUARE}</code></pre>
+
+<div class="annot">
+  注意 <code>jdbc:dm://</code> 和 <code>dm.jdbc.driver.DmDriver</code>——
+  这是达梦数据库的 JDBC 协议和驱动，不是 MySQL 的 <code>jdbc:mysql://</code>。
+  <code>${db.host}</code> 引用的是下面 <code>db:</code> 段定义的占位符，而 <code>db.host</code>
+  又用 <code>${DB_HOST:8.166.117.70}</code> 读环境变量。<strong>两层占位符</strong>是常见模式：
+  yml 内部用短名引用，短名再读环境变量，让配置既可读又可覆盖。
+</div>
+
+<h3>MyBatis-Plus 配置</h3>
+<pre><code>mybatis-plus:
+  type-handlers-package: com.smartsquare.typehandler
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto</code></pre>
+
+<div class="annot">
+  <code>map-underscore-to-camel-case: true</code> 让数据库的 <code>product_name</code>
+  自动映射到 Java 的 <code>productName</code>——数据库下划线命名和 Java 驼峰命名的转换不用手写。
+  <code>id-type: auto</code> 表示主键用数据库自增。
+</div>
+
+<h2>三、三层架构：一个请求的完整旅程</h2>
+
+<p>这是本课的核心。用 <code>ProductController</code> 的「创建产品」接口追踪一个请求：</p>
+
+<div class="flow">浏览器 POST /products  (JSON body)
+        │
+        ▼
+┌─ Controller 层 ──────────────────────────────────┐
+│  ProductController.createProduct(param)          │
+│  · @PostMapping("/products")  路由匹配            │
+│  · @Valid                     触发参数校验         │
+│  · @AdminAuth                 角色鉴权（AOP 切面） │
+│  · 调用 productService.createProduct(param)      │
+│  · 直接 return ProductResult（不包装！）          │
+└──────────────────┬───────────────────────────────┘
+                   ▼
+┌─ Service 层 ─────────────────────────────────────┐
+│  ProductService.createProduct(param)             │
+│  · @Service @Slf4j @RequiredArgsConstructor      │
+│  · 事务边界在这里（@Transactional）              │
+│  · 业务逻辑：校验、转换、调用 Mapper             │
+│  · 抛 BusinessException 表示业务错误             │
+└──────────────────┬───────────────────────────────┘
+                   ▼
+┌─ Mapper 层（数据访问）─────────────────────────────┐
+│  ProductMapper.insert(product)                   │
+│  · MyBatis-Plus 的 BaseMapper 提供 CRUD          │
+│  · 实际执行 SQL，写入达梦数据库                   │
+└──────────────────┬───────────────────────────────┘
+                   ▼
+┌─ Entity 层 ──────────────────────────────────────┐
+│  Product  (仅作持久化容器，不写业务逻辑)          │
+│  · @Data @Builder @NoArgsConstructor              │
+│  · 继承 BaseEntity                               │
+│  · 字段对应数据库列                               │
+└──────────────────────────────────────────────────┘
+                   │
+                   ▼  (Controller 返回 ProductResult)
+┌─ ResponseAdvice（统一响应）───────────────────────┐
+│  自动拦截所有 Controller 返回值                   │
+│  · 把 ProductResult 包成 Response<ProductResult> │
+│  · {"code":"SUCCESS","data":{...}}               │
+│  · Controller 不用手动包装！                      │
+└──────────────────────────────────────────────────┘</div>
+
+<h3>看真实代码——Controller</h3>
+
+<pre><code>@Tag(name = "API产品管理", description = "...")
+@RestController
+@RequestMapping("/products")
+@Slf4j
+@RequiredArgsConstructor
+public class ProductController {
+
+    private final ProductService productService;  // 构造器注入，不用 @Autowired
+
+    @Operation(summary = "创建API产品")
+    @PostMapping
+    @AdminAuth
+    public ProductResult createProduct(@RequestBody @Valid CreateProductParam param) {
+        return productService.createProduct(param);
+    }
+}</code></pre>
+
+<div class="annot">
+  逐行拆解：
+  <ul>
+    <li><code>@RestController</code> = <code>@Controller</code> + <code>@ResponseBody</code>，返回值自动转 JSON</li>
+    <li><code>@RequestMapping("/products")</code> 类级别路由前缀，方法级别 <code>@PostMapping</code> 拼成 <code>POST /products</code></li>
+    <li><code>@RequiredArgsConstructor</code>（Lombok）自动生成构造器，<code>private final</code> 字段通过构造器注入——这是规范要求的注入方式，<strong>禁止用 <code>@Autowired</code></strong></li>
+    <li><code>@RequestBody</code> 把 JSON body 反序列化成 <code>CreateProductParam</code>，<code>@Valid</code> 触发参数校验</li>
+    <li><code>@AdminAuth</code> 是项目自定义注解，通过 AOP 切面校验调用者是否是管理员——下阶段认证课细讲</li>
+    <li><strong>Controller 直接 <code>return</code> 业务对象，不手动包装</strong>——这是本项目的硬性规范</li>
+  </ul>
+</div>
+
+<h2>四、统一响应：ResponseAdvice 的魔法</h2>
+
+<p>Controller 明明返回的是 <code>ProductResult</code>，前端收到的却是
+<code>{"code":"SUCCESS","data":{...}}</code>。谁包的？是 <code>ResponseAdvice</code>：</p>
+
+<pre><code>@RestControllerAdvice
+public class ResponseAdvice implements ResponseBodyAdvice&lt;Object&gt; {
+
+    // 判断要不要拦截这个返回值
+    @Override
+    public boolean supports(MethodParameter returnType, ...) {
+        Class&lt;?&gt; type = returnType.getMethod().getReturnType();
+        return !type.equals(ResponseEntity.class)
+                && !type.equals(Response.class)        // 已经是 Response 就不重复包
+                && !type.equals(SseEmitter.class)      // SSE 流式不包
+                && !type.equals(Flux.class)            // 响应式流不包
+                && !type.equals(Mono.class);
+    }
+
+    // 拦截后把返回值包成 Response
+    @Override
+    public Object beforeBodyWrite(Object body, ...) {
+        if (body instanceof Response) return body;  // 避免重复包装
+        response.setStatusCode(HttpStatus.OK);
+        return Response.ok(body);   // → {"code":"SUCCESS","data":body}
+    }
+}</code></pre>
+
+<div class="callout">
+  <strong>为什么这样设计</strong>：如果每个 Controller 方法都手动 <code>return Response.ok(data)</code>，
+  会有几百处重复代码，而且容易漏包或包错。用 <code>ResponseBodyAdvice</code> 在框架层统一拦截，
+  Controller 只关心业务逻辑，返回业务对象即可。<strong>这是「关注点分离」的典型实践</strong>。
+</div>
+
+<h2>五、统一异常：ExceptionAdvice 的三道防线</h2>
+
+<p>业务出错了怎么办？本项目<strong>禁止用 null 表示业务错误</strong>，统一抛 <code>BusinessException</code>，
+由 <code>ExceptionAdvice</code> 捕获并转成统一响应：</p>
+
+<pre><code>@RestControllerAdvice
+public class ExceptionAdvice {
+
+    // 防线 1：业务异常（如"产品不存在"）
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity&lt;Response&lt;Void&gt;&gt; handleBusinessException(BusinessException e, ...) {
+        return ResponseEntity.status(e.getStatus())
+                .body(Response.fail(e.getCode(), e.getMessage()));
+    }
+
+    // 防线 2：参数校验异常（如 @Valid 不通过）
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity&lt;Response&lt;Void&gt;&gt; handleParamVerifyException(...) { ... }
+
+    // 防线 3：兜底——所有未捕获的异常
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity&lt;Response&lt;Void&gt;&gt; handleSystemException(Exception e, ...) {
+        log.error("[System Exception] ...", e);  // 记完整堆栈
+        return ResponseEntity.status(500)
+                .body(Response.fail("INTERNAL_ERROR", ...));
+    }
+}</code></pre>
+
+<div class="annot">
+  <strong>三层异常处理的分工</strong>：
+  <ul>
+    <li><code>BusinessException</code>——预期内的业务错误（产品不存在、权限不足），记 <code>warn</code> 级别，不记堆栈</li>
+    <li><code>MethodArgumentNotValidException</code>——用户提交的参数不合法，也是 <code>warn</code>，不记堆栈</li>
+    <li><code>Exception</code> 兜底——意料之外的系统 bug，记 <code>error</code> 级别 + 完整堆栈，方便排查</li>
+  </ul>
+  日志级别区分是有意为之：业务错误和参数错误是用户行为，不该污染错误日志；只有系统异常才需要堆栈。
+</div>
+
+<h2>六、Response 的结构</h2>
+
+<pre><code>@Data @Accessors(chain = true)
+@NoArgsConstructor @AllArgsConstructor
+public class Response&lt;T&gt; {
+    private String code;     // "SUCCESS" 或错误码
+    private String message;  // 错误信息（成功时为空）
+    private T data;          // 业务数据
+
+    public static &lt;T&gt; Response&lt;T&gt; ok(T data) {
+        return new Response&lt;T&gt;().setCode("SUCCESS").setData(data);
+    }
+    public static &lt;T&gt; Response&lt;T&gt; fail(String code, String message) {
+        return new Response&lt;T&gt;().setCode(code).setMessage(message);
+    }
+}</code></pre>
+
+<div class="annot">
+  <code>@Accessors(chain = true)</code> 让 setter 返回 <code>this</code>，可以链式调用：
+  <code>new Response&lt;T&gt;().setCode("SUCCESS").setData(data)</code>。
+  <code>code</code> 是字符串而不是数字——用 <code>"SUCCESS"</code> / <code>"PRODUCT_NOT_FOUND"</code>
+  这样的语义化错误码，比 <code>200</code> / <code>404</code> 更易读、更稳定。
+</div>
+
+<h2>七、本课要点回顾</h2>
+
+<table>
+<thead><tr><th>概念</th><th>项目里的体现</th></tr></thead>
+<tbody>
+<tr><td>自动配置</td><td><code>@SpringBootApplication</code> 一键开启，引入 starter 就自动配好</td></tr>
+<tr><td>组件扫描</td><td><code>@ComponentScan</code> 扫描 <code>com.smartsquare</code>，加注解即成 Bean</td></tr>
+<tr><td>配置绑定</td><td><code>@EnableConfigurationProperties</code> 把 yml 映射成类型化 Java 对象</td></tr>
+<tr><td>环境隔离</td><td><code>application-{profile}.yml</code> + <code>SPRING_PROFILES_ACTIVE</code></td></tr>
+<tr><td>三层架构</td><td>Controller（路由+鉴权）→ Service（业务+事务）→ Mapper（数据）→ Entity（容器）</td></tr>
+<tr><td>构造器注入</td><td><code>@RequiredArgsConstructor</code> + <code>private final</code>，禁用 <code>@Autowired</code></td></tr>
+<tr><td>统一响应</td><td><code>ResponseAdvice</code> 自动包装，Controller 只返回业务对象</td></tr>
+<tr><td>统一异常</td><td><code>ExceptionAdvice</code> 三道防线，业务错误抛 <code>BusinessException</code></td></tr>
+</tbody>
+</table>
+
+<!-- 互动测验 -->
+<div class="quiz" id="q1">
+  <q>问题 1：ProductController 的 createProduct 方法返回 ProductResult，前端收到的 JSON 为什么多了 code 和 data 两层？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q1" data-correct="false">Controller 方法里手动调用了 Response.ok() 包装</label></li>
+    <li><label><input type="radio" name="q1" data-correct="true">ResponseAdvice 实现了 ResponseBodyAdvice，在框架层自动拦截并包装</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">Spring Boot 内置的 DispatcherServlet 默认就会包装</label></li>
+    <li><label><input type="radio" name="q1" data-correct="false">ProductResult 类继承自 Response 类</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q2">
+  <q>问题 2：项目规范禁止用 @Autowired 注入依赖，应该用什么替代？为什么？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q2" data-correct="false">用 @Resource 注解，它是 JSR 标准更规范</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">用字段反射注入，代码更简洁</label></li>
+    <li><label><input type="radio" name="q2" data-correct="true">用 @RequiredArgsConstructor + private final，构造器注入让依赖不可变且易测试</label></li>
+    <li><label><input type="radio" name="q2" data-correct="false">用 ApplicationContext.getBean() 手动获取</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q3">
+  <q>问题 3：Service 层发现"产品不存在"时，正确的处理方式是什么？</q>
+  <ul class="options">
+    <li><label><input type="radio" name="q3" data-correct="false">返回 null，让 Controller 判断后返回错误响应</label></li>
+    <li><label><input type="radio" name="q3" data-correct="true">抛出 BusinessException(ErrorCode.PRODUCT_NOT_FOUND)，由 ExceptionAdvice 统一处理</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">返回一个带 error 标志的 ProductResult 对象</label></li>
+    <li><label><input type="radio" name="q3" data-correct="false">直接在 Service 里写 HTTP 响应并返回</label></li>
+  </ul>
+  <div class="feedback"></div>
+</div>
+
+<script>
+  document.querySelectorAll('.quiz').forEach(quiz => {
+    const options = quiz.querySelectorAll('input[type="radio"]');
+    const feedback = quiz.querySelector('.feedback');
+    options.forEach(opt => {
+      opt.addEventListener('change', () => {
+        const isCorrect = opt.dataset.correct === 'true';
+        feedback.className = 'feedback ' + (isCorrect ? 'correct' : 'wrong');
+        feedback.textContent = isCorrect
+          ? '✓ 正确。' + (quiz.id === 'q1' ? 'ResponseAdvice 在返回值写回前端之前拦截，自动包成 Response。Controller 因此保持简洁，只返回业务对象。'
+              : quiz.id === 'q2' ? '构造器注入让依赖在对象创建时就确定且不可变（final），单元测试也能直接 new 出对象传 mock，不依赖 Spring 容器。'
+              : 'BusinessException 携带 ErrorCode，ExceptionAdvice 捕获后转成统一错误响应。禁止用 null 表示业务错误是项目硬性规范——null 会让调用方忘记判空，且丢失错误信息。')
+          : '✗ 再想想。提示：回顾本课「统一响应」「构造器注入」「统一异常」三节。';
+      });
+    });
+  });
+</script>
+
+<div class="lesson-footer">
+  <h3>下一步</h3>
+  <p>
+    → 上一节：<a href="../reference/0001-tech-stack-overview.html">技术栈全景图</a><br>
+    → 下一节：<a href="../lessons/0003-maven-multi-module.html">Maven 多模块与依赖方向</a>（进入微服务架构阶段）
+  </p>
+  <h3>推荐一手资料</h3>
+  <p>
+    <a href="https://docs.spring.io/spring-boot/docs/3.5.x/reference/htmlsingle/">Spring Boot 3.5 官方文档</a> ·
+    <a href="../../standards/backend/README.md">后端编码规范入口</a> ·
+    <a href="../../standards/backend/project-structure.md">项目结构规范</a> ·
+    <a href="../../standards/backend/api-controller.md">Controller 规范</a>
+  </p>
+  <h3>动手练习（可选）</h3>
+  <p>
+    打开 <code>ProductController.java</code>，找到 <code>listProducts</code> 方法。
+    思考：它返回 <code>PageResult&lt;ProductResult&gt;</code>，前端收到的 JSON 结构会是什么样？
+    （提示：ResponseAdvice 会再包一层 Response）
+  </p>
+  <h3>有疑问？</h3>
+  <p>随时向你的 AI 老师提问——比如「@AdminAuth 是怎么实现鉴权的」「为什么 ResponseAdvice 要排除 SseEmitter」都可以深挖。</p>
+</div>
+
+</div>
+</body>
+</html>
