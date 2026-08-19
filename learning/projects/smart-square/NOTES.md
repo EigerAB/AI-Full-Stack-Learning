@@ -47,6 +47,28 @@
 - [x] 0004 Nacos 注册发现与配置中心（含 OpenFeign + 身份头透传）
 - [x] 0005 网关集中鉴权与 JWT 机制（认证授权体系第一节）
 - [x] 0006 SSO 登录链路与 JADP/OAuth2/OIDC（认证授权体系第二节）
+- [x] 0007 角色注解与方法级授权（认证授权体系第三节，完结）
+
+## 消化期提问记录
+
+### 2026-08-18：JADP 是什么 + JADP 和 JWT 的关系
+
+学习者在消化第 1 课时对 JADP 产生疑问，随后追问 JADP 和 JWT 的关系。核心认知盲点：把不同层面的东西（系统 vs 格式）当成了同一层面来比较。
+
+已整理到 `learning-records/0007-jadp-and-jwt-relationship.md`，要点：
+- JADP 是企业身份认证平台（系统），JWT 是令牌格式（标准），不是协同关系而是上下游
+- JADP 是身份源头，JWT 是广场内部传递身份的格式
+- 不直接用 JADP token 当广场 token 的三个原因：性能（Redis 缓存不回源）、解耦（JADP 挂了不影响）、可控性（广场自己控制会话撤销）
+
+### 2026-08-18：WebMVC 与 WebFlux 的区别及不能共存的原因
+
+学习者在消化第 3 课 Maven 多模块时对「common 用 WebMVC、gateway 用 WebFlux、两者不能共存」产生疑问。
+
+已整理到 `learning-records/0008-webmvc-vs-webflux.md`，要点：
+- WebMVC 是阻塞式「一请求一线程」模型（Servlet/Tomcat），WebFlux 是非阻塞「事件循环」模型（Reactor/Netty）
+- 项目按职责分工：admin/chat 做 CRUD 用 WebMVC，gateway 做转发用 WebFlux
+- 不能共存两层原因：服务器层面（Tomcat vs Netty 二选一）+ 编程模型层面（阻塞 vs 非阻塞，过滤器链互不识别）
+- 架构后果：gateway 不依赖 common，鉴权逻辑各写一套——是技术栈约束的必然结果
 
 ## 待确认
 

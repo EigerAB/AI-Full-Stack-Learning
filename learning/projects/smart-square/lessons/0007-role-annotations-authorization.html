@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 7 课 · 角色注解与方法级授权</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .annot {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.6rem 1rem;
+    margin: 1rem 0;
+    font-family: var(--sans);
+    font-size: 0.9rem;
+  }
+  .annot strong { color: #1565c0; }
+  .annot.warn {
+    border-color: var(--warn);
+    background: var(--warn-soft);
+  }
+  .annot.warn strong { color: #e65100; }
+  .annot.ok {
+    border-color: var(--ok);
+    background: var(--ok-soft);
+  }
+  .annot.ok strong { color: #2e7d32; }
+  .flow {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1.2rem 0;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .step {
+    display: inline-block;
+    width: 1.7em;
+    color: var(--accent);
+    font-weight: 700;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-family: var(--sans);
+    font-size: 0.88rem;
+  }
+  th, td {
+    border: 1px solid var(--rule);
+    padding: 0.5rem 0.7rem;
+    text-align: left;
+  }
+  th {
+    background: var(--code-bg);
+    font-weight: 600;
+  }
+  .quiz-q { margin: 1.2rem 0 0.3rem; font-weight: 600; font-family: var(--sans); }
+  .quiz-options { list-style: upper-alpha; padding-left: 2rem; font-family: var(--sans); font-size: 0.9rem; }
+  .quiz-options li { margin: 0.3rem 0; }
+  details { margin: 0.5rem 0 1.5rem; }
+  details summary {
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  details p {
+    font-family: var(--sans);
+    font-size: 0.88rem;
+    color: var(--ok);
+    margin: 0.3rem 0;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>第 7 课 · 角色注解与方法级授权</h1>
+<p class="meta">
+  课程 ·
+  <a href="0006-sso-oauth-jadp.html">← 上一节：SSO 登录链路</a> ·
+  <a href="../reference/0001-tech-stack-overview.html">全景图</a> ·
+  <a href="../MISSION.md">学习使命</a>
+</p>
+
+<blockquote>
+  目标：理解从<strong>网关注入身份头</strong>到<strong>Controller 方法上的 @AdminAuth 生效</strong>的完整链路——
+  身份怎么还原、Spring Security 怎么配置、注解怎么拦截、角色怎么判定。
+  学完后你能回答「一个 @AdminAuth 注解的请求经历了哪些检查」。
+</blockquote>
+
+<h2>一、回顾——我们已经走到哪里</h2>
+
+<p>前两课讲了认证授权体系的前半段：</p>
+
+<ul>
+  <li><strong>第 5 课</strong>：网关 <code>AuthGlobalFilter</code> 集中校验 token，注入 <code>X-User-*</code> 身份头</li>
+  <li><strong>第 6 课</strong>：用户怎么登录拿到 token（SSO ticket 换 JWT、JADP/OAuth2/OIDC）</li>
+</ul>
+
+<p>但故事只讲了一半——网关注入了身份头之后呢？下游服务怎么<strong>拿到</strong>这个身份？Controller 上的 <code>@AdminAuth</code> 注解是<strong>谁在检查</strong>、<strong>怎么检查</strong>的？这一课就补完最后一段。</p>
+
+<div class="annot">
+  <strong>关键心智</strong>：网关负责<strong>认证</strong>（你是谁），下游负责<strong>授权</strong>（你能干什么）。
+  网关注入 <code>X-User-*</code> 头 → 下游还原身份 → Spring Security 方法级注解做权限判断。
+</div>
+
+<h2>二、完整链路全景——一个 @AdminAuth 请求的旅程</h2>
+
+<p>先看全景，再逐段拆解。假设管理员调用 <code>POST /products</code>（标注了 <code>@AdminAuth</code>）：</p>
+
+<div class="flow">浏览器                Gateway                Admin Service              Spring Security
+  │                     │                       │                          │
+  │ POST /products       │                       │                          │
+  │ Cookie: auth_token   │                       │                          │
+  │────────────────────►│                       │                          │
+  │                     │                       │                          │
+  │                     <span class="step">1</span>AuthGlobalFilter          │                          │
+  │                     │  剥离伪造头             │                          │
+  │                     │  验 JWT → 查 Redis     │                          │
+  │                     │  注入 X-User-* 头      │                          │
+  │                     │──────────────────────►│                          │
+  │                     │                       │                          │
+  │                     │                       <span class="step">2</span>TrustedHeaderAuthFilter   │
+  │                     │                       │  读 X-User-* 头          │
+  │                     │                       │  构建 Authentication     │
+  │                     │                       │  存 SecurityContextHolder │
+  │                     │                       │  存 ContextHolder        │
+  │                     │                       │─────────────────────────►│
+  │                     │                       │                          │
+  │                     │                       │                          <span class="step">3</span>路径级检查
+  │                     │                       │                          │  /products 不在白名单
+  │                     │                       │                          │  → 要求 authenticated()
+  │                     │                       │                          │  → SecurityContext 有身份 ✓
+  │                     │                       │                          │
+  │                     │                       │                          <span class="step">4</span>方法级检查
+  │                     │                       │                          │  @AdminAuth → @PreAuthorize
+  │                     │                       │                          │  → isAuthenticated() ✓
+  │                     │                       │                          │
+  │                     │                       <span class="step">5</span>Controller 方法执行       │
+  │                     │                       │  productService.create() │
+  │                     │                       │◄─────────────────────────│
+  │                     │  200 OK               │                          │
+  │◄────────────────────│◄──────────────────────│                          │</div>
+
+<p>五个阶段，每一步都有具体的组件负责。下面逐段拆解。</p>
+
+<h2>三、下游身份还原——TrustedHeaderAuthenticationFilter</h2>
+
+<p>网关注入的 <code>X-User-*</code> 头是 HTTP 头，Spring Security 不认识它们。需要有人把头<strong>翻译</strong>成 Spring Security 能理解的 <code>Authentication</code> 对象——这就是 <code>TrustedHeaderAuthenticationFilter</code> 的职责。</p>
+
+<pre><code>// smart-square-common/.../security/TrustedHeaderAuthenticationFilter.java
+@Override
+protected void doFilterInternal(HttpServletRequest request,
+                                HttpServletResponse response,
+                                FilterChain chain) throws ServletException, IOException {
+    // 1. 处理 traceId（独立于用户身份）
+    String traceId = request.getHeader(TrustedHeaders.TRACE_ID);
+    if (StrUtil.isNotBlank(traceId)) {
+        contextHolder.saveTraceId(traceId);
+        MDC.put(MDC_TRACE_ID, traceId);  // 日志链路追踪
+    }
+
+    // 2. 读取用户身份头
+    String userId = request.getHeader(TrustedHeaders.USER_ID);
+    String userType = request.getHeader(TrustedHeaders.USER_TYPE);
+    if (StrUtil.isNotBlank(userId) && StrUtil.isNotBlank(userType)) {
+        String orgCode = request.getHeader(TrustedHeaders.ORG_CODE);
+        String userName = decodeHeader(request.getHeader(TrustedHeaders.USER_NAME));
+        List<String> roles = splitCsvHeader(request.getHeader(TrustedHeaders.USER_ROLES));
+        List<String> roleNames = splitCsvHeader(
+            decodeHeader(request.getHeader(TrustedHeaders.USER_ROLE_NAMES)));
+
+        // 3. 构建 Spring Security Authentication
+        //    authority = ROLE_<userType>，如 ROLE_ADMIN
+        String role = CommonConstants.ROLE_PREFIX + userType.toUpperCase(Locale.ROOT);
+        UsernamePasswordAuthenticationToken authentication =
+            new UsernamePasswordAuthenticationToken(
+                userId,                          // principal
+                null,                            // credentials（无密码）
+                Collections.singletonList(
+                    new SimpleGrantedAuthority(role)));  // authorities
+
+        // 4. 将完整身份存入 details（供 SSE 异步线程回退用）
+        authentication.setDetails(HostSsoUser.builder()
+            .userId(userId)
+            .userName(userName)
+            .orgCode(orgCode)
+            .roles(roles)
+            .roleNames(roleNames)
+            .traceId(traceId)
+            .build());
+
+        // 5. 存入 SecurityContextHolder（Spring Security 用）
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        // 6. 存入 ContextHolder ThreadLocal（业务代码用）
+        contextHolder.saveOrgCode(orgCode);
+        contextHolder.saveRoles(roles);
+        contextHolder.saveRoleNames(roleNames);
+    }
+
+    chain.doFilter(request, response);
+
+    // 7. 请求结束，清理 ThreadLocal（防止线程池复用导致身份串号）
+    contextHolder.clearOrgCode();
+    contextHolder.clearRoles();
+    contextHolder.clearRoleNames();
+    contextHolder.clearTraceId();
+}</code></pre>
+
+<div class="annot">
+  <strong>为什么存两个地方？</strong>
+  <code>SecurityContextHolder</code> 是 Spring Security 的标准上下文，<code>@PreAuthorize</code> 从这里读身份。
+  <code>ContextHolder</code> 是项目自己的 ThreadLocal，业务代码（如 Service 层）通过它拿 <code>orgCode</code>、<code>roleNames</code> 更方便。
+  两者存的是同一份身份，只是入口不同。
+</div>
+
+<h3>中文编码的坑</h3>
+
+<p>注意 <code>decodeHeader</code> 和 <code>splitCsvHeader</code> 的调用——HTTP 头只能传 ISO-8859-1，中文姓名（如「张三」）和含逗号的角色名列表需要特殊处理：</p>
+
+<ul>
+  <li>网关注入时：URL 编码中文，逗号转义为 <code>%2C</code></li>
+  <li>下游还原时：先 URL 解码，再按逗号切分</li>
+</ul>
+
+<p>如果不做这步，中文姓名会乱码，角色名列表会被逗号错误切分。</p>
+
+<h3>HostSsoUser——身份详情对象</h3>
+
+<pre><code>// smart-square-common/.../security/HostSsoUser.java
+@Data @Builder
+public class HostSsoUser {
+    private String userId;
+    private String userName;
+    private String orgCode;
+    private List<String> roles;       // JADP roleCode，仅作透传与留痕
+    private List<String> roleNames;   // JADP roleName，角色判定的唯一判据
+    private String traceId;
+}</code></pre>
+
+<p>这个对象存在 <code>Authentication.details</code> 里。为什么不用 <code>principal</code>？因为 <code>principal</code> 已经是 <code>userId</code> 字符串了，而 <code>details</code> 可以放任意对象，适合存完整身份快照。</p>
+
+<h2>四、ContextHolder——业务代码的身份入口</h2>
+
+<p><code>ContextHolder</code> 是项目自己的鉴权上下文，用 ThreadLocal 存当前请求的身份信息。业务代码（Service 层）需要拿当前用户信息时，不用直接碰 Spring Security，而是通过 <code>ContextHolder</code>。</p>
+
+<pre><code>// smart-square-common/.../security/ContextHolder.java
+public class ContextHolder {
+    private final ThreadLocal<String> orgContext = new ThreadLocal<>();
+    private final ThreadLocal<List<String>> rolesContext = new ThreadLocal<>();
+    private final ThreadLocal<List<String>> roleNamesContext = new ThreadLocal<>();
+    private final ThreadLocal<String> traceIdContext = new ThreadLocal<>();
+
+    // 获取 orgCode——优先 ThreadLocal，回退 SecurityContext
+    public String getOrgCode() {
+        String orgCode = orgContext.get();
+        if (StrUtil.isNotBlank(orgCode)) return orgCode;
+
+        // 回退：从 Authentication.details 获取（SSE 异步线程场景）
+        try {
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getDetails() instanceof HostSsoUser ssoUser) {
+                return ssoUser.getOrgCode();
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    // 角色判断
+    public boolean isAdministrator() {
+        return getCurrentUserType() == UserType.ADMIN;
+    }
+
+    public boolean isDeveloper() {
+        return getCurrentUserType() == UserType.DEVELOPER;
+    }
+
+    // 超管判断——用 roleName 而非 roleCode
+    public boolean isSuperAdmin() {
+        List<String> superRoles = permissionProperties.getSuperAdminRoles();
+        if (superRoles == null || superRoles.isEmpty()) return false;
+        return getRoleNames().stream().anyMatch(superRoles::contains);
+    }
+}</code></pre>
+
+<div class="annot warn">
+  <strong>为什么 isSuperAdmin 用 roleName？</strong>
+  JADP 的 <code>roleCode</code>（roleId）是不可读随机串，如 <code>47DB3AED9CE54400...</code>，
+  没法写进配置文件。而 <code>roleName</code> 是可读角色名，如「应用广场超级管理员」。
+  所以 <code>permission.super-admin-roles</code> 配置的是角色名列表，判定时用 roleName 求交。
+  <br><br>
+  这是第 7 课（JADP 笔记）里讲的「角色判定一律用 roleName」在代码里的体现。
+</div>
+
+<h3>SSE 异步线程的回退机制</h3>
+
+<p>为什么 <code>getOrgCode()</code> 有个回退逻辑？因为 <strong>SSE 流式响应</strong>。</p>
+
+<p>普通请求：一个线程从头跑到尾，ThreadLocal 全程有效。</p>
+<p>SSE 请求：Controller 方法返回后，Spring MVC 用 <code>ASYNC</code> 派发继续推送事件，此时可能切换到另一个线程——ThreadLocal 丢了。</p>
+
+<p>回退方案：身份快照存在 <code>Authentication.details</code>（HostSsoUser），<code>SecurityContextHolder</code> 在同一次请求里跨线程仍可访问（Spring Security 做了线程继承）。所以 ThreadLocal 为主、SecurityContext 为辅。</p>
+
+<h2>五、六个角色注解——从 @AdminAuth 到 @PublicAccess</h2>
+
+<p>项目定义了六个注解，全部在 <code>smart-square-common/.../core/annotation/</code> 下。它们的本质是 <strong>组合了 <code>@PreAuthorize</code> 的元注解</strong>。</p>
+
+<table>
+  <tr>
+    <th>注解</th>
+    <th>@PreAuthorize 表达式</th>
+    <th>含义</th>
+    <th>用在哪</th>
+  </tr>
+  <tr>
+    <td><code>@AdminAuth</code></td>
+    <td><code>isAuthenticated()</code></td>
+    <td>要求登录（过渡期，细粒度鉴权待改造）</td>
+    <td>admin 管理端接口</td>
+  </tr>
+  <tr>
+    <td><code>@DeveloperAuth</code></td>
+    <td><code>isAuthenticated()</code></td>
+    <td>要求登录（同上）</td>
+    <td>开发者门户接口</td>
+  </tr>
+  <tr>
+    <td><code>@AdminOrDeveloperAuth</code></td>
+    <td><code>isAuthenticated()</code></td>
+    <td>要求登录（同上）</td>
+    <td>管理员和开发者都能用的接口</td>
+  </tr>
+  <tr>
+    <td><code>@SuperAdminAuth</code></td>
+    <td><code>@contextHolder.isSuperAdmin()</code></td>
+    <td>要求超管角色（roleName 命中配置）</td>
+    <td>系统级/跨组织操作</td>
+  </tr>
+  <tr>
+    <td><code>@AssistantAuth</code></td>
+    <td><code>hasRole('ASSISTANT')</code></td>
+    <td>要求 ASSISTANT 角色</td>
+    <td>chat 对话微服务</td>
+  </tr>
+  <tr>
+    <td><code>@PublicAccess</code></td>
+    <td>无</td>
+    <td>标记公开访问，无需认证</td>
+    <td>登录页、公开下载等</td>
+  </tr>
+</table>
+
+<h3>注解定义——以 @AdminAuth 为例</h3>
+
+<pre><code>// smart-square-common/.../core/annotation/AdminAuth.java
+@Target({ElementType.METHOD, ElementType.TYPE})  // 可标注在方法或类上
+@Retention(RetentionPolicy.RUNTIME)               // 运行时保留
+@PreAuthorize("isAuthenticated()")                // 组合 Spring Security 的 @PreAuthorize
+public @interface AdminAuth {}</code></pre>
+
+<p>关键在于 <code>@PreAuthorize("isAuthenticated()")</code> 这一行——它不是注解的属性，而是<strong>元注解</strong>。当你给方法标了 <code>@AdminAuth</code>，Spring Security 看到的是 <code>@PreAuthorize("isAuthenticated()")</code>，就会在方法调用前检查 <code>SecurityContext</code> 里有没有认证过的身份。</p>
+
+<div class="annot">
+  <strong>过渡期设计</strong>：<code>@AdminAuth</code>、<code>@DeveloperAuth</code>、<code>@AdminOrDeveloperAuth</code>
+  当前都只要求 <code>isAuthenticated()</code>（登录即可），不区分管理员和开发者。
+  注释写明「细粒度鉴权待子系统 B 改造」——也就是说，<strong>角色区分目前由 JADP 角色门禁在登录时做</strong>，
+  方法级注解只做「是否登录」这道底线检查。未来会加 <code>hasRole('ADMIN')</code> 等细粒度判断。
+</div>
+
+<h3>@SuperAdminAuth——真正有角色判断的注解</h3>
+
+<pre><code>// smart-square-common/.../core/annotation/SuperAdminAuth.java
+@Target({ElementType.METHOD, ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+@PreAuthorize("@contextHolder.isSuperAdmin()")  // 调用 ContextHolder 的方法
+public @interface SuperAdminAuth {}</code></pre>
+
+<p>这里 <code>@PreAuthorize</code> 的表达式是 <code>@contextHolder.isSuperAdmin()</code>——<code>@</code> 前缀表示引用一个 Bean，<code>contextHolder</code> 是 Bean 名，<code>isSuperAdmin()</code> 是方法。Spring Security 会调用这个方法，返回 <code>true</code> 才放行。</p>
+
+<p>这是 SpEL（Spring Expression Language）的用法——<code>@PreAuthorize</code> 不只能用内置函数（<code>isAuthenticated</code>、<code>hasRole</code>），还能调用任意 Bean 的方法。</p>
+
+<h3>@PublicAccess——标记公开，不是鉴权</h3>
+
+<pre><code>// smart-square-common/.../core/annotation/PublicAccess.java
+@Target({ElementType.METHOD, ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+// 注意：没有 @PreAuthorize！
+public @interface PublicAccess {}</code></pre>
+
+<p><code>@PublicAccess</code> 不含 <code>@PreAuthorize</code>，它本身不做任何拦截。它的作用是<strong>被 <code>PublicAccessPathScanner</code> 扫描到</strong>，然后告诉 <code>SecurityConfig</code>「这个路径放行，不要求认证」。</p>
+
+<h2>六、SecurityConfig——路径级授权的守门人</h2>
+
+<p>每个下游服务都有自己的 <code>SecurityConfig</code>，配置 Spring Security 的过滤器链。以 admin 为例：</p>
+
+<pre><code>// smart-square-admin/.../config/SecurityConfig.java
+@Configuration
+@EnableMethodSecurity  // 启用方法级安全（@PreAuthorize 生效的关键）
+public class SecurityConfig {
+
+    // 手动维护的白名单
+    private static final String[] AUTH_WHITELIST = {
+        "/auth/sso/login",        // 登录接口
+        "/auth/sso/login-url",
+        "/auth/mode",
+        "/developers/authorize",  // 开发者 OAuth2 授权
+        "/developers/callback",
+        "/developers/providers",
+        "/developers/oidc/authorize",
+        "/developers/oidc/callback",
+        "/developers/oidc/providers",
+        "/developers/oauth2/token",
+        "/ws/acp",                // WebSocket 智能编码
+        "/ws/terminal",           // WebSocket 远程终端
+        "/cli-providers",         // CLI Provider 列表
+        "/skills/*/download",     // Skill 下载
+        "/workers/*/download",
+        "/workers/*/files/**"
+    };
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        // 扫描 @PublicAccess 注解的端点
+        List<PublicAccessEndpoint> publicEndpoints =
+            publicAccessPathScanner.getPublicAccessEndpoints();
+
+        http.cors(Customizer.withDefaults())
+            .csrf(AbstractHttpConfigurer::disable)  // 无状态 API，不需要 CSRF
+            .sessionManagement(session ->
+                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))  // 无 Session
+            .authorizeHttpRequests(auth -> {
+                auth.dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()  // SSE 放行
+                    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()    // CORS 预检放行
+                    .requestMatchers(HttpMethod.POST, "/developers").permitAll() // 开发者注册
+                    .requestMatchers(AUTH_WHITELIST).permitAll()
+                    .requestMatchers(SWAGGER_WHITELIST).permitAll()
+                    .requestMatchers(SYSTEM_WHITELIST).permitAll()
+                    .requestMatchers(OPEN_API_WHITELIST).permitAll();
+
+                // 动态放行 @PublicAccess 扫描到的端点
+                for (PublicAccessEndpoint endpoint : publicEndpoints) {
+                    if (endpoint.httpMethod() != null) {
+                        auth.requestMatchers(endpoint.httpMethod(), endpoint.path())
+                            .permitAll();
+                    } else {
+                        auth.requestMatchers(endpoint.path()).permitAll();
+                    }
+                }
+
+                // 其他所有请求要求认证
+                auth.anyRequest().authenticated();
+            })
+            // 未认证时的返回——不是默认的 401 页面，而是 JSON + 登录地址
+            .exceptionHandling(ex -> ex.authenticationEntryPoint(
+                (request, response, authEx) -> {
+                    response.setStatus(401);
+                    response.setContentType("application/json;charset=UTF-8");
+                    String loginUrl = ssoAuthorizeUrlBuilder.build();
+                    response.getWriter().write(
+                        "{\"code\":\"UNAUTHORIZED\",\"message\":\"未登录\","
+                        + "\"loginUrl\":\"" + loginUrl + "\"}");
+                }))
+            // 插入身份还原过滤器
+            .addFilterBefore(
+                new TrustedHeaderAuthenticationFilter(contextHolder),
+                UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+}</code></pre>
+
+<h3>关键配置逐行解读</h3>
+
+<table>
+  <tr>
+    <th>配置</th>
+    <th>为什么</th>
+  </tr>
+  <tr>
+    <td><code>@EnableMethodSecurity</code></td>
+    <td>启用方法级安全，<code>@PreAuthorize</code> 才能生效。没有它，所有 <code>@AdminAuth</code> 都是摆设</td>
+  </tr>
+  <tr>
+    <td><code>STATELESS</code></td>
+    <td>无状态——不创建 HttpSession，身份每次请求都从可信头还原</td>
+  </tr>
+  <tr>
+    <td><code>ASYNC.permitAll</code></td>
+    <td>SSE 流式响应用 ASYNC 派发，不能被 Spring Security 拦截</td>
+  </tr>
+  <tr>
+    <td><code>OPTIONS.permitAll</code></td>
+    <td>CORS 预检请求不带 token，必须放行</td>
+  </tr>
+  <tr>
+    <td><code>anyRequest().authenticated()</code></td>
+    <td>默认拒绝策略——不在白名单的路径都要求认证（fail-closed）</td>
+  </tr>
+  <tr>
+    <td><code>addFilterBefore(TrustedHeaderAuthenticationFilter)</code></td>
+    <td>在 Spring Security 标准的 <code>UsernamePasswordAuthenticationFilter</code> 之前插入身份还原</td>
+  </tr>
+  <tr>
+    <td>401 返回 <code>loginUrl</code></td>
+    <td>前端拿到 401 时能直接跳 SSO 登录页，不用硬编码地址</td>
+  </tr>
+</table>
+
+<h3>chat 模块的 SecurityConfig——区分 401 和 403</h3>
+
+<pre><code>// smart-square-chat/.../config/ChatSecurityConfig.java
+private static final String UNAUTHORIZED_BODY =
+    "{\"code\":\"UNAUTHORIZED\",\"message\":\"登录已失效，请重新登录\",\"data\":null}";
+private static final String FORBIDDEN_BODY =
+    "{\"code\":\"FORBIDDEN\",\"message\":\"无权访问该资源\",\"data\":null}";
+
+// 401：未认证（token 无效或缺失）
+static final AuthenticationEntryPoint UNAUTHORIZED_ENTRY_POINT =
+    (request, response, authEx) -> writeError(response, HttpStatus.UNAUTHORIZED, UNAUTHORIZED_BODY);
+
+// 403：已认证但无权限（如 ASSISTANT 角色调用管理员接口）
+static final AccessDeniedHandler ACCESS_DENIED_HANDLER =
+    (request, response, deniedEx) -> writeError(response, HttpStatus.FORBIDDEN, FORBIDDEN_BODY);</code></pre>
+
+<p>chat 模块明确区分了 401（未认证）和 403（已认证但无权限）。admin 模块只配了 401 入口，因为 admin 的 <code>@AdminAuth</code> 过渡期只检查 <code>isAuthenticated()</code>，不会产生 403。</p>
+
+<h2>七、PublicAccessPathScanner——自动发现公开端点</h2>
+
+<p>白名单维护是个麻烦事——每加一个公开接口就得改 <code>SecurityConfig</code>。<code>PublicAccessPathScanner</code> 解决了这个问题：启动时扫描所有 <code>@RestController</code>，找到标注了 <code>@PublicAccess</code> 的方法，自动注册到白名单。</p>
+
+<pre><code>// smart-square-common/.../security/PublicAccessPathScanner.java
+@Override
+public void setApplicationContext(ApplicationContext applicationContext) {
+    Set<PublicAccessEndpoint> endpoints = new HashSet<>();
+    String[] beanNames = applicationContext.getBeanNamesForAnnotation(RestController.class);
+    for (String beanName : beanNames) {
+        scanController(applicationContext.getType(beanName), endpoints);
+    }
+    publicAccessEndpoints = endpoints;
+}
+
+private void scanController(Class<?> controllerClass, Set<PublicAccessEndpoint> endpoints) {
+    String[] classLevelPaths = getClassLevelPaths(controllerClass);
+    boolean classLevelPublic = AnnotatedElementUtils.hasAnnotation(controllerClass, PublicAccess.class);
+
+    for (Method method : controllerClass.getDeclaredMethods()) {
+        boolean hasAuthAnnotation = hasAuthAnnotation(method, controllerClass);
+        boolean methodLevelPublic = AnnotatedElementUtils.hasAnnotation(method, PublicAccess.class);
+
+        // 鉴权注解优先级高于 @PublicAccess
+        if (hasAuthAnnotation) continue;
+
+        if (methodLevelPublic || classLevelPublic) {
+            HttpMethod[] httpMethods = getHttpMethods(method);
+            String[] methodPaths = getMethodLevelPaths(method);
+            // 拼接类级路径 + 方法级路径，添加到白名单
+        }
+    }
+}</code></pre>
+
+<div class="annot">
+  <strong>优先级规则</strong>：如果方法同时标了 <code>@AdminAuth</code> 和 <code>@PublicAccess</code>，
+  <code>@AdminAuth</code> 赢——该方法<strong>不</strong>加入白名单，仍需认证。
+  这是 fail-closed 设计：宁可误拦，不可误放。
+</div>
+
+<h2>八、两层授权——路径级 vs 方法级</h2>
+
+<p>现在可以完整理解授权的两个层次了：</p>
+
+<h3>第一层：路径级（SecurityConfig 配置）</h3>
+
+<p>请求到达时，Spring Security 先检查路径：</p>
+
+<ul>
+  <li>在白名单里（AUTH_WHITELIST / @PublicAccess 扫描）→ <code>permitAll()</code> 放行</li>
+  <li>不在白名单 → <code>anyRequest().authenticated()</code> → 检查 <code>SecurityContext</code> 有没有身份</li>
+  <li>有身份 → 进入下一层</li>
+  <li>无身份 → 401（未认证）</li>
+</ul>
+
+<h3>第二层：方法级（@PreAuthorize 注解）</h3>
+
+<p>路径检查通过后，进入 Controller 方法前，<code>@PreAuthorize</code> 再做一次检查：</p>
+
+<ul>
+  <li><code>isAuthenticated()</code> → 检查是否已认证（<code>@AdminAuth</code>、<code>@DeveloperAuth</code>）</li>
+  <li><code>hasRole('ASSISTANT')</code> → 检查 authorities 是否包含 <code>ROLE_ASSISTANT</code>（<code>@AssistantAuth</code>）</li>
+  <li><code>@contextHolder.isSuperAdmin()</code> → 调用 Bean 方法检查 roleName（<code>@SuperAdminAuth</code>）</li>
+  <li>检查通过 → 执行方法</li>
+  <li>检查不通过 → 403（已认证但无权限）</li>
+</ul>
+
+<div class="annot ok">
+  <strong>两层防御的意义</strong>：路径级是<strong>粗粒度</strong>的（谁能访问这组接口），
+  方法级是<strong>细粒度</strong>的（这个具体操作需要什么角色）。
+  即使路径级白名单配错了，方法级注解还能兜底——反之亦然。
+</div>
+
+<h2>九、PermissionProperties——超管角色配置</h2>
+
+<pre><code>// smart-square-common/.../config/properties/PermissionProperties.java
+@Data
+@Component
+@ConfigurationProperties(prefix = "permission")
+public class PermissionProperties {
+    /**
+     * 超管角色名（OR：用户 JADP 角色名与该集合有交集即超管）
+     * 匹配 roleName 而非 roleId
+     * 默认空集 = 无人是超管（fail-closed），须由各环境配置显式赋值
+     */
+    private List<String> superAdminRoles = new ArrayList<>();
+}</code></pre>
+
+<p>配置在 <code>application.yml</code> 里：</p>
+
+<pre><code>permission:
+  super-admin-roles:
+    - 应用广场超级管理员
+    - 知识平台超级管理员</code></pre>
+
+<p>默认空集 = 无人是超管。这是 <strong>fail-closed</strong> 设计——忘了配置不会导致所有人都变成超管，而是所有人都不是超管。</p>
+
+<h2>十、总结——完整授权链路</h2>
+
+<div class="flow">                     认证（网关）                           授权（下游）
+                     ──────────                             ────────
+
+浏览器 ──► AuthGlobalFilter ──► TrustedHeaderAuthFilter ──► SecurityConfig ──► @PreAuthorize ──► Controller
+              │                      │                       │                  │
+              │ 剥离伪造头            │ 读 X-User-* 头         │ 路径级检查        │ 方法级检查
+              │ 验 JWT/查 Redis      │ 构建 Authentication    │ 白名单放行        │ isAuthenticated()
+              │ 注入 X-User-* 头     │ 存 SecurityContext     │ 其他要求认证      │ hasRole()
+              │                      │ 存 ContextHolder       │ 无身份 → 401     │ isSuperAdmin()
+              │                      │                       │                  │ 无权限 → 403
+              │                      │                       │                  │
+              │  认证失败 → 401       │                       │                  │
+              │  不做授权判断         │                       │                  │</div>
+
+<div class="annot ok">
+  <strong>一句话总结</strong>：网关认证后注入 <code>X-User-*</code> 头 →
+  <code>TrustedHeaderAuthenticationFilter</code> 还原为 Spring Security 身份 →
+  <code>SecurityConfig</code> 做路径级白名单检查 →
+  <code>@PreAuthorize</code>（通过 <code>@AdminAuth</code> 等元注解）做方法级角色检查 →
+  全部通过才执行 Controller 方法。
+</div>
+
+<h2>十一、互动测验</h2>
+
+<div class="quiz-q">1. <code>@AdminAuth</code> 注解当前实际检查的是什么？</div>
+<ol class="quiz-options">
+  <li>用户是否是管理员角色</li>
+  <li>用户是否已登录（<code>isAuthenticated()</code>）</li>
+  <li>用户的 JADP roleName 是否包含「管理员」</li>
+  <li>用户的 userType 是否为 ADMIN</li>
+</ol>
+<details><summary>查看答案</summary><p>B。过渡期 <code>@AdminAuth</code> 只检查 <code>isAuthenticated()</code>，细粒度鉴权待改造。角色区分目前由 JADP 角色门禁在登录时做。</p></details>
+
+<div class="quiz-q">2. <code>TrustedHeaderAuthenticationFilter</code> 为什么要把身份存到两个地方（SecurityContextHolder 和 ContextHolder）？</div>
+<ol class="quiz-options">
+  <li>冗余备份，一个挂了用另一个</li>
+  <li>SecurityContextHolder 给 Spring Security 用，ContextHolder 给业务代码用</li>
+  <li>SecurityContextHolder 给同步请求用，ContextHolder 给 SSE 用</li>
+  <li>没有特别原因，只是历史遗留</li>
+</ol>
+<details><summary>查看答案</summary><p>B。<code>@PreAuthorize</code> 从 SecurityContextHolder 读身份；业务代码（Service 层）通过 ContextHolder 拿 orgCode、roleNames 更方便。两者存的是同一份身份。</p></details>
+
+<div class="quiz-q">3. <code>@SuperAdminAuth</code> 的 <code>@contextHolder.isSuperAdmin()</code> 判定依据是什么？</div>
+<ol class="quiz-options">
+  <li>用户的 roleCode 是否匹配配置</li>
+  <li>用户的 roleName 是否与 <code>permission.super-admin-roles</code> 有交集</li>
+  <li>用户的 userType 是否为 ADMIN</li>
+  <li>用户是否通过了 JADP 登录</li>
+</ol>
+<details><summary>查看答案</summary><p>B。isSuperAdmin() 检查 getRoleNames() 与 permission.super-admin-roles 配置列表是否有交集。用 roleName 而非 roleCode，因为 JADP 的 roleCode 是不可读随机串。</p></details>
+
+<div class="quiz-q">4. 如果一个方法同时标了 <code>@AdminAuth</code> 和 <code>@PublicAccess</code>，会发生什么？</div>
+<ol class="quiz-options">
+  <li>公开访问，无需登录</li>
+  <li>需要登录（<code>@AdminAuth</code> 优先级更高）</li>
+  <li>报错，不能同时标两个注解</li>
+  <li>取决于配置文件里的优先级设置</li>
+</ol>
+<details><summary>查看答案</summary><p>B。PublicAccessPathScanner 扫描时，如果检测到鉴权注解（@AdminAuth 等），会跳过该方法，不加入白名单。所以 @AdminAuth 赢，方法仍需认证。这是 fail-closed 设计。</p></details>
+
+<div class="quiz-q">5. SSE 流式响应时，ContextHolder 的 ThreadLocal 丢了怎么办？</div>
+<ol class="quiz-options">
+  <li>SSE 不需要身份信息，无所谓</li>
+  <li>回退到 SecurityContext 的 Authentication.details（HostSsoUser）获取</li>
+  <li>重新从网关获取身份头</li>
+  <li>用 Redis 缓存的身份快照</li>
+</ol>
+<details><summary>查看答案</summary><p>B。ContextHolder 的 getOrgCode() 等方法优先从 ThreadLocal 取，取不到时回退到 SecurityContextHolder.getContext().getAuthentication().getDetails()，从中取出 HostSsoUser 获取身份信息。</p></details>
+
+<h2>十二、关键设计决策回顾</h2>
+
+<table>
+  <tr>
+    <th>决策</th>
+    <th>为什么</th>
+  </tr>
+  <tr>
+    <td>网关认证，下游授权</td>
+    <td>网关只管「你是谁」，下游管「你能干什么」——职责分离</td>
+  </tr>
+  <tr>
+    <td>身份头防伪造</td>
+    <td>网关先剥离外部同名头再注入，下游必须经过网关才能获得身份</td>
+  </tr>
+  <tr>
+    <td>角色判定用 roleName</td>
+    <td>JADP 的 roleCode 是不可读随机串，只有 roleName 可读可配置</td>
+  </tr>
+  <tr>
+    <td>过渡期只检查 isAuthenticated()</td>
+    <td>角色区分由 JADP 门禁在登录时做，方法级注解只做底线检查，待后续细化</td>
+  </tr>
+  <tr>
+    <td>SSE 异步回退到 Authentication.details</td>
+    <td>ThreadLocal 在线程切换时丢失，SecurityContext 跨线程仍可访问</td>
+  </tr>
+  <tr>
+    <td>@PublicAccess 自动扫描</td>
+    <td>不用手动维护白名单，加注解即可</td>
+  </tr>
+  <tr>
+    <td>鉴权注解优先于 @PublicAccess</td>
+    <td>fail-closed——宁可误拦不可误放</td>
+  </tr>
+  <tr>
+    <td>superAdminRoles 默认空集</td>
+    <td>fail-closed——忘了配置不会让所有人变超管</td>
+  </tr>
+  <tr>
+    <td>401 返回 loginUrl</td>
+    <td>前端可直接跳登录页，不用硬编码</td>
+  </tr>
+</table>
+
+<p class="meta">下一课方向待定——可选：AI 对话与协议 / 智能编码与 MCP / 数据持久化 / 可观测与计费</p>
+
+</div>
+</body>
+</html>
