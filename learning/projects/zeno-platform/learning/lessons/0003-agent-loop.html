@@ -1,0 +1,259 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 3 课 · AgentLoop 核心引擎</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="lesson-head">
+  <p class="eyebrow">第 3 课 · AI 链路排障</p>
+  <h1>AgentLoop——LLM ↔ Tool ↔ Repeat 的核心引擎</h1>
+  <p class="meta">阅读约 12 分钟 · 主源 <code>core/agent/execution/loop.py</code> · <a href="0002-chat-service-flow.html">← 上一课</a></p>
+</header>
+
+<p>上一课的终点是 <code>_run_agent_scoped</code> 阶段 2.3：<code>Agent.chat</code>。这一课我们钻进去，看一轮对话真正「跑」起来的地方——<strong>AgentLoop</strong>。它是所有执行模式（单循环 / Subagent / Team / Plan）共享的唯一引擎，也是「回复内容不对」「工具没调」「跑着跑着空了」这类故障的最终落点。</p>
+
+<div class="concept">
+  <p class="tag">先纠正一个路径</p>
+  <p>第 2 课的归因表里写「<code>core/agent/</code>（下一课）」。准确说，AgentLoop 不在 <code>core/agent/base.py</code>，而在 <code>core/agent/execution/loop.py</code>。<code>base.py</code> 里的 <code>Agent</code> 类是<strong>外壳</strong>——它准备上下文、建一个 <code>AgentLoop</code> 实例、调 <code>loop.run()</code>、再把 yield 出来的事件路由给 SSE。真正「LLM → 工具 → 重复」的循环体在 <code>execution/loop.py</code>。</p>
+</div>
+
+<h2>调用链：从 Agent.chat 到 while True</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/core/agent/base.py</span> · <code>_execute_inner</code> 第 430 行起</div>
+
+<pre><code>chat_service._run_agent_scoped 阶段 2.3
+  └─ Agent.execute()                      base.py:397
+     └─ Agent._execute_inner()            base.py:430   ← 准备 + 事件路由
+        ├─ _prepare_execution()           base.py:654   ← 建 ExecutionContext / LoopConfig
+        ├─ loop = AgentLoop(config, hook_runner)  base.py:539
+        └─ async for event in loop.run()  base.py:557   ← 进 core/agent/execution/loop.py
+              └─ AgentLoop._run_unpinned()  loop.py:305
+                 └─ while True:             loop.py:380  ← 循环体在这里</code></pre>
+
+<p><code>_execute_inner</code> 做两件事：① 调 <code>_prepare_execution</code> 把 agent 配置、工具、system prompt、模型名打包成 <code>ExecutionContext</code>；② <code>async for event in loop.run()</code> 把 loop yield 的事件<strong>分类路由</strong>——<code>LLM_CONTENT_DELTA</code> 给 stream_handler 转发到 SSE，<code>TOOL_RESULT</code> 转成 block，<code>RESULT</code> 检查是否失败。所以 loop 只管「跑和 yield」，往外发什么由 <code>_execute_inner</code> 决定。</p>
+
+<h2>循环体：一轮的五个阶段</h2>
+
+<div class="file-ref"><span class="path">core/agent/execution/loop.py</span> · <code>_run_unpinned</code> 第 305 行起，<code>while True</code> 在第 380 行</div>
+
+<pre><code>while True:                                    loop.py:380
+
+  ① 闸门检查
+     ├─ llm_rounds >= max_turns?  → ERROR_MAX_TURNS  (loop.py:381)
+     └─ _is_over_budget?          → ERROR_MAX_BUDGET (loop.py:388)
+
+  ② LLM 调用
+     ├─ enable_stream=True  → _llm_stream_single  (loop.py:1314)
+     │                        yield LLM_*_DELTA 事件流
+     └─ enable_stream=False → _llm_call_single    (loop.py:1284)
+                              只 yield thinking delta
+     两者最终都走 from core.llm import llm 统一入口
+     失败 → ERROR_EXECUTION (loop.py:474)，prompt-too-long 例外可恢复一次
+
+  ③ 工具提取 + 终止判断
+     ├─ _extract_tool_calls → 过滤合法的 (有 id+name)   (loop.py:504)
+     ├─ 无合法工具调用：
+     │   ├─ stop_reason==max_tokens → 注入续写提示，重试≤3 次  (loop.py:511)
+     │   ├─ 无可见输出(正文空+无工具) → 注入提示重试 1 次      (loop.py:535)
+     │   │   仍空 → ERROR_EXECUTION (EmptyModelResponseError)
+     │   └─ 否则 → SUCCESS (loop.py:586)  ← 正常结束
+     └─ permission_mode=="plan" → 工具全拒，SUCCESS (loop.py:595)
+
+  ④ 工具执行
+     ├─ BeforeToolUse hook：BLOCK → 清空调用，注入拦截消息，continue
+     │                       MODIFY → 改写 tool_calls            (loop.py:609)
+     ├─ _execute_tools → te.execute_tools (可并行)                (loop.py:653)
+     │   单个工具 is_error=True 不终止循环！结果照常回传模型
+     │   只有 _execute_tools 抛异常才 → ERROR_EXECUTION (loop.py:712)
+     └─ 挂起分流（AG-UI）：工具返回 suspended → SUSPENDED 收尾    (loop.py:719)
+
+  ⑤ 收尾本轮
+     ├─ _append_turn：把 assistant 回复 + tool_result 追加进 llm_messages
+     ├─ AfterToolUse hook                                          (loop.py:762)
+     ├─ _trim_if_needed：超 token 预算就裁剪历史                    (loop.py:771)
+     └─ continue → 回到 ①</code></pre>
+
+<p>记住这个形状：<strong>每轮 = 一次 LLM 调用 +（可能有）一次工具执行</strong>。<code>llm_rounds</code> 在 LLM 调用成功后 +1（loop.py:502），不是在工具执行后。所以「max_turns=30」意味着最多 30 次 LLM 调用。</p>
+
+<h2>五种终止——和它们对应的症状</h2>
+
+<p>这是排障时最该背的一张表。loop 只有 5 种方式退出 <code>while True</code>，每种产出一个 <code>RESULT</code> 事件，<code>subtype</code> 字段就是答案：</p>
+
+<table style="width:100%; font-size:0.86rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">subtype</th>
+  <th style="padding:0.4rem;">触发条件</th>
+  <th style="padding:0.4rem;">行号</th>
+  <th style="padding:0.4rem;">典型症状</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;"><code>success</code></td>
+  <td style="padding:0.4rem;">LLM 无工具调用且有正文</td>
+  <td style="padding:0.4rem;">586</td>
+  <td style="padding:0.4rem;">正常结束</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;"><code>error_max_turns</code></td>
+  <td style="padding:0.4rem;">llm_rounds ≥ max_turns</td>
+  <td style="padding:0.4rem;">383</td>
+  <td style="padding:0.4rem;">「跑了很多轮还没停」/ 工具反复调</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;"><code>error_max_budget_usd</code></td>
+  <td style="padding:0.4rem;">超费用预算</td>
+  <td style="padding:0.4rem;">390 / 492</td>
+  <td style="padding:0.4rem;">跑到一半被费用门掐了</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;"><code>error_during_execution</code></td>
+  <td style="padding:0.4rem;">LLM 抛异常 / 工具执行抛异常 / 空回复重试仍空</td>
+  <td style="padding:0.4rem;">474 / 712 / 571</td>
+  <td style="padding:0.4rem;">SSE 收到 error 事件，有异常类名</td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;"><code>error_no_model</code></td>
+  <td style="padding:0.4rem;">context.model_name 为空</td>
+  <td style="padding:0.4rem;">342</td>
+  <td style="padding:0.4rem;">「空 run」：llm_calls=0、model=unknown</td>
+</tr>
+</tbody>
+</table>
+
+<p>（还有 <code>suspended</code>——AG-UI 前端动作工具挂起，<strong>不是错误</strong>，本次 run 正常收尾等续跑。）</p>
+
+<h2>🔴 最大的坑：错误判据是 subtype，不是 exception</h2>
+
+<p>这是这个 loop 里<strong>最容易误判</strong>的地方，也是线上「成功的空 run」问题的根因。</p>
+
+<div class="file-ref"><span class="path">core/agent/errors.py</span> · <code>run_error_from_result</code> 第 54 行</div>
+
+<p><code>AgentLoop._make_result</code>（loop.py:1958）<strong>只在被传入 Exception 时</strong>才往结果里加 <code>error</code> 键。但 5 条失败返回里有 4 条<strong>不传 Exception</strong>：无模型、max_turns、max_budget×2、工具执行失败。如果上层用「有没有 <code>error</code> 键」判断失败，这 4 条全部漏判——消息落 <code>completed</code>、AG-UI 不发 <code>event: error</code>，前端只看到 <code>RUN_STARTED → RUN_FINISHED</code>，<strong>零错误线索</strong>。</p>
+
+<p>正确的判据是 <code>subtype.startswith("error_")</code>（errors.py:80）。<code>_execute_inner</code> 用的就是 <code>run_error_from_result</code>，它优先取富信息 <code>error</code> 键（带真实异常类名），没有就回退到 subtype。</p>
+
+<div class="debug-tip">排障「用户说 AI 没回复，但前端显示已完成、后端日志也没 error」时，<strong>别看 error 日志，看 RESULT 事件的 <code>subtype</code></strong>。多半是 <code>error_no_model</code>（租户上下文丢失 / connection 解析失败）或 <code>error_max_turns</code>（工具死循环）。这条判据就是为了给「空 run」一个可指认的分支标识而专门拆出来的。</div>
+
+<h2>三个「不一样」的细节</h2>
+
+<h3>1. 没有 provider fallback 了</h3>
+
+<p>loop.py:175 的注释写得很直白：2026-07-22 的「全删回退」移除了跨厂商/跨模型的容错切换。<code>_llm_call_single</code>（loop.py:1284）现在<strong>单模型单次调用，失败直接上抛</strong>，由 <code>run()</code> 的 except 分支捕获回传。这意味着「配 A 跑 B」在这套代码里<strong>结构上不可能</strong>——如果日志里看到模型名和配置不一致，问题在 <code>_prepare_execution</code> 解析阶段，不在 loop 里。</p>
+
+<h3>2. 单个工具失败 ≠ 循环终止</h3>
+
+<p>这是和很多人直觉相反的一点。<code>_execute_tools</code> 返回 <code>dict[str, ToolExecutionResult]</code>，每个结果有 <code>is_error</code> 标志（loop.py:674）。<strong>单个工具 <code>is_error=True</code> 不会终止循环</strong>——错误结果照常追加进消息历史，模型可以读到错误并自行修正。只有 <code>_execute_tools</code> 本身<strong>抛异常</strong>（比如 tool_executor 没配置、批量调度崩了）才走 except 分支终止（loop.py:698-713）。</p>
+
+<div class="debug-tip">「工具报错了但 AI 还在继续跑」是<strong>正常行为</strong>，不是 bug。模型会读到 <code>{"type":"tool_result","is_error":true,"content":"..."}</code> 并决定重试或换方案。只有「工具报错后 AI 立刻停了」才要看是不是 <code>_execute_tools</code> 抛了异常。</div>
+
+<h3>3. 空回复守卫：绝不静默 SUCCESS</h3>
+
+<p>loop.py:535 的 <code>_has_visible_output</code> 只看 <code>content</code> 是否非空字符串——<code>thinking</code> 不算（对用户不可见）。如果一轮既没正文也没合法工具调用（多半是模型把答案写进了 reasoning 就 stop），loop 会注入一段提示让模型「把话说出来」，重试 1 次；仍空就抛 <code>EmptyModelResponseError</code> 收尾成 <code>ERROR_EXECUTION</code>。<strong>绝不把它当 SUCCESS 静默结束</strong>——否则用户会拿到一条空的「已完成」。</p>
+
+<h2>流式 vs 非流式</h2>
+
+<p>由 <code>LoopConfig.enable_stream</code> 控制（默认 True）。差别只在<strong>第 ② 阶段的 LLM 调用怎么 yield</strong>：</p>
+
+<ul>
+  <li><strong>流式</strong>：<code>_llm_stream_single</code> 在 LLM 生成过程中逐块 yield <code>LLM_THINKING_DELTA</code> / <code>LLM_CONTENT_DELTA</code> / <code>LLM_TOOL_USE_START</code> / <code>LLM_TOOL_INPUT_DELTA</code>，最后 yield 一个 <code>LLMResponse</code> 对象。<code>_execute_inner</code> 把这些 delta 路由给 <code>stream_handler</code>（content_handler）→ EventBroadcaster → SSE，前端就能看到字一个个冒出来。</li>
+  <li><strong>非流式</strong>：<code>_llm_call_single</code> 一次性返回 <code>LLMResponse</code>，只在有 <code>thinking</code> 时 yield 一个 thinking delta。前端要等整段生成完才看到。</li>
+</ul>
+
+<p>两种模式<strong>共用同一个 while True 循环体</strong>，终止条件、工具执行、错误处理完全一样。浏览器面（HTTP）走的是流式——所以你在前端看到的「思考中…」字样就是 <code>LLM_THINKING_DELTA</code> 事件实时渲染的结果。</p>
+
+<h2>排障归因表（增量）</h2>
+
+<table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">症状</th>
+  <th style="padding:0.4rem;">最可能落点</th>
+  <th style="padding:0.4rem;">确认方式</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">「已完成」但内容为空、无 error 事件</td>
+  <td style="padding:0.4rem;">RESULT subtype = <code>error_no_model</code></td>
+  <td style="padding:0.4rem;">看 RESULT 事件 subtype；查 model_name 为何为空（租户上下文 / connection 解析）</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">AI 跑了很多轮没停</td>
+  <td style="padding:0.4rem;"><code>error_max_turns</code></td>
+  <td style="padding:0.4rem;">看 turns_used；工具是否在反复调同一个</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">跑到一半被中止</td>
+  <td style="padding:0.4rem;"><code>error_max_budget_usd</code></td>
+  <td style="padding:0.4rem;">查 max_budget_usd 配置 + usage_tracker 累计</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">SSE error 事件带异常类名</td>
+  <td style="padding:0.4rem;"><code>error_during_execution</code>（LLM 或工具抛异常）</td>
+  <td style="padding:0.4rem;">看 error.type 字段；LLM 失败看「LLM 调用失败」日志，工具失败看「工具执行失败」日志</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工具报错但 AI 继续跑</td>
+  <td style="padding:0.4rem;">正常行为（is_error=True 不终止）</td>
+  <td style="padding:0.4rem;">不是 bug；看模型是否在自行修正</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工具被拦但 AI 没停</td>
+  <td style="padding:0.4rem;">BeforeToolUse hook BLOCK</td>
+  <td style="padding:0.4rem;">看有没有 hook 返回 blocked；模型会收到拦截消息再决定</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">Plan 模式下工具没执行</td>
+  <td style="padding:0.4rem;"><code>permission_mode=="plan"</code></td>
+  <td style="padding:0.4rem;">设计如此：plan 模式工具全拒，只读分析</td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;">回复被截断后又续上了</td>
+  <td style="padding:0.4rem;">max_tokens 恢复（≤3 次）</td>
+  <td style="padding:0.4rem;">看日志「max_tokens 截断检测, 注入续写提示」</td>
+</tr>
+</tbody>
+</table>
+
+<h2>检索检验</h2>
+
+<div class="quiz">
+  <p class="q-label">排障检验</p>
+  <p class="question">用户反馈：AI 回复了一条空消息，前端显示「已完成」，后端日志里没有任何 error 级别记录，也没有异常堆栈。SSE 流里有 RUN_STARTED 和 RUN_FINISHED 但中间没有 content delta。最该先看什么？</p>
+  <ul class="options">
+    <li>翻 LLM 调用失败的 error 日志，找异常类名</li>
+    <li>查 _execute_tools 抛没抛异常，看工具执行日志</li>
+    <li data-correct="1">看 RESULT 事件的 subtype 字段，大概率是 error_no_model</li>
+    <li>查 BeforeToolUse hook 是不是 BLOCK 了所有工具</li>
+  </ul>
+  <p class="feedback">关键线索：「无 error 日志、无异常堆栈、无 content delta、却显示已完成」正是「成功的空 run」的典型表现。loop 里 4 条失败路径不传 Exception，按「有没有 error 键」会全部漏判，只有 subtype 才指认得到。无 content delta 说明 LLM 根本没被调起来（否则流式会有 delta），这指向 error_no_model——model_name 为空，loop.py:342 直接 yield 结果返回。下一步查 _prepare_execution 里 model_name 怎么解析的（租户上下文丢失 / connection 解析失败）。如果 subtype 是 error_max_turns 则会有多轮 LLM 调用记录，和「无 delta」不符。</p>
+</div>
+
+<h2>推荐主源</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/core/agent/execution/loop.py</span> · <code>_run_unpinned</code> 第 305-793 行（循环体全文）</div>
+
+<p>重点读：第 380 行的 <code>while True</code>、第 508-593 行的终止判断分支、第 595 行的 plan 模式、第 609-625 行的 BeforeToolUse hook、第 698-713 行的工具异常分支。然后对照 <code>core/agent/errors.py</code> 第 54 行的 <code>run_error_from_result</code> 理解错误判据。</p>
+
+<p><code>core/agent/base.py</code> 的 <code>_execute_inner</code>（第 430 行）也值得通读一遍——看它怎么把 loop yield 的事件路由给 stream_handler 和 SSE，这是 loop 和外部世界的边界。</p>
+
+<h2>下一课</h2>
+
+<p>AgentLoop 的第 ④ 阶段调 <code>_execute_tools</code> → <code>tool_executor.execute_tools</code>。下一课进 <code>core/tool/</code>，看工具注册、选择、并行执行和 <code>ToolExecutionResult.is_error</code> 是怎么来的——这是「工具没调」「工具报错」类故障的下一跳。</p>
+
+<footer class="lesson-foot">
+  <p>有不清楚的地方？直接问我——我是你的老师，可以随时打断、追问、要更多例子。</p>
+  <p><a href="../MISSION.md">使命</a> · <a href="../RESOURCES.md">资源清单</a> · <a href="../NOTES.md">教学笔记</a> · <a href="0002-chat-service-flow.html">← 上一课</a></p>
+</footer>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

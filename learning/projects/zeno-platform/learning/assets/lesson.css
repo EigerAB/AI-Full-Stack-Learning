@@ -1,0 +1,233 @@
+/* ZenFlux Agent 学习课 — 共享样式
+   每个 lesson <link rel="stylesheet" href="../assets/lesson.css">
+   设计取向：Tufte 式克制，窄栏、衬线正文、无装饰，打印友好。 */
+
+:root {
+  --bg: #fafaf7;
+  --ink: #1a1a1a;
+  --muted: #6b6b6b;
+  --rule: #d8d4cc;
+  --accent: #b5482a;
+  --code-bg: #f3f0e8;
+  --code-ink: #2a2a2a;
+  --ok: #2d6a4f;
+  --bad: #9b2226;
+  --maxw: 680px;
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 16px; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, "Source Han Serif SC", "Noto Serif CJK SC", serif;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: var(--maxw);
+  margin: 2.5rem auto 4rem;
+  padding: 0 1.25rem;
+}
+
+header.lesson-head {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 1.25rem;
+  margin-bottom: 1.75rem;
+}
+
+header.lesson-head .eyebrow {
+  font-family: "Inter", "Helvetica Neue", system-ui, sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+header.lesson-head h1 {
+  font-size: 1.7rem;
+  line-height: 1.25;
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+header.lesson-head .meta {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+h2 {
+  font-size: 1.18rem;
+  margin: 2rem 0 0.6rem;
+  font-weight: 600;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.2rem;
+}
+
+h2:first-of-type { border-top: 0; padding-top: 0; }
+
+h3 {
+  font-size: 1rem;
+  margin: 1.4rem 0 0.4rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+p { margin: 0 0 0.9rem; }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(181,72,42,0.3); }
+a:hover { border-bottom-color: var(--accent); }
+
+code, pre, .mono {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.86em;
+}
+
+code {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 0.08em 0.32em;
+  border-radius: 3px;
+}
+
+pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 0.9rem 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  line-height: 1.5;
+  font-size: 0.82rem;
+  border: 1px solid var(--rule);
+}
+
+pre code { background: none; padding: 0; }
+
+blockquote {
+  margin: 1rem 0;
+  padding: 0.2rem 0 0.2rem 1rem;
+  border-left: 2px solid var(--accent);
+  color: #444;
+  font-style: italic;
+}
+
+ul, ol { padding-left: 1.3rem; }
+li { margin-bottom: 0.35rem; }
+
+/* 文件引用块 */
+.file-ref {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.78rem;
+  background: var(--code-bg);
+  border-left: 3px solid var(--accent);
+  padding: 0.5rem 0.8rem;
+  margin: 0.8rem 0;
+  color: #444;
+}
+.file-ref .path { font-family: "JetBrains Mono", monospace; color: var(--ink); }
+
+/* 检索题 / quiz */
+.quiz {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1.1rem 1.25rem;
+  margin: 1.5rem 0;
+}
+.quiz .q-label {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 0.5rem;
+}
+.quiz .question { font-weight: 600; margin: 0 0 0.8rem; }
+.quiz .options { list-style: none; padding: 0; margin: 0; }
+.quiz .options li {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.9rem;
+  padding: 0.55rem 0.7rem;
+  margin: 0 0 0.4rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.quiz .options li:hover { background: var(--code-bg); }
+.quiz .options li.selected { border-color: var(--accent); background: #fff5f0; }
+.quiz .options li.correct { border-color: var(--ok); background: #f0f7f3; }
+.quiz .options li.wrong { border-color: var(--bad); background: #fbf0f0; }
+.quiz .feedback {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+  display: none;
+}
+.quiz .feedback.show { display: block; }
+.quiz .feedback.ok { color: var(--ok); }
+.quiz .feedback.no { color: var(--bad); }
+
+/* 关键概念卡 */
+.concept {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1rem 1.2rem;
+  margin: 1.2rem 0;
+}
+.concept .tag {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.3rem;
+}
+
+/* 排障提示框 */
+.debug-tip {
+  background: #fffdf5;
+  border: 1px solid #e8d98a;
+  border-radius: 4px;
+  padding: 0.7rem 1rem;
+  margin: 1rem 0;
+  font-size: 0.92rem;
+}
+.debug-tip::before {
+  content: "排障 ▸ ";
+  font-family: "Inter", system-ui, sans-serif;
+  font-weight: 600;
+  color: #8a6d00;
+}
+
+/* 页脚 */
+footer.lesson-foot {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+footer.lesson-foot a { color: var(--muted); border-bottom-color: var(--rule); }
+footer.lesson-foot .next {
+  display: inline-block;
+  margin-top: 0.6rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 打印 */
+@media print {
+  body { background: #fff; }
+  .wrap { max-width: 100%; margin: 0; padding: 0 0.5in; }
+  .quiz .options li { cursor: default; }
+  a { border-bottom: 0; }
+}

@@ -1,0 +1,273 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 4 课 · 工具执行层</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="lesson-head">
+  <p class="eyebrow">第 4 课 · AI 链路排障</p>
+  <h1>工具执行层——从 AgentLoop 到工具真正跑起来</h1>
+  <p class="meta">阅读约 12 分钟 · 主源 <code>core/tool/executor.py</code> · <a href="0003-agent-loop.html">← 上一课</a></p>
+</header>
+
+<p>上一课的 AgentLoop 第 ④ 阶段调 <code>_execute_tools</code> → <code>tool_executor.execute_tools</code>，拿到一个 <code>dict[str, ToolExecutionResult]</code>。这一课我们钻进 <code>core/tool/</code>，看这个 dict 是怎么来的——工具怎么被找到、怎么被校验、怎么并行跑、<code>is_error</code> 是谁判的。这是「工具没调」「工具报错」「工具被拦」类故障的落点。</p>
+
+<h2>调用链：从 AgentLoop 到 provider.invoke</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/core/tool/executor.py</span> · <code>ToolExecutor</code> 第 113 行</div>
+
+<pre><code>AgentLoop._execute_tools                    loop.py:1400
+  └─ te.execute_tools(tool_calls, ...)       executor.py:772   ← 批量入口
+     ├─ prevalidate_tool_calls               executor.py:787   ← schema 预检
+     │  └─ 不通过 → 直接返回 _schema_blocked_results（不跑任何工具）
+     ├─ _policy_enforcer._partition_by_policy  executor.py:814 ← 按策略分组
+     └─ 对每个 group：
+        ├─ 单个 → _execute_single_tracked    executor.py:591
+        │  └─ self.execute(tool_name, ...)   executor.py:463  ← 单工具入口
+        │     ├─ manager.get_tool → 找不到 → 返回 TOOL_NOT_FOUND（不抛）
+        │     ├─ _maybe_suspend_for_blocking → 确认门/挂起    executor.py:337
+        │     ├─ _schema_validator._pre_execute_validation    executor.py:514
+        │     ├─ manager.invoke(tool_name, input, ctx)        executor.py:526
+        │     │  └─ provider.invoke → 真正跑工具              provider_manager.py:215
+        │     └─ _postprocess_result_with_schema（压缩/校验）
+        └─ 多个 → _run_parallel_with_abort   executor.py:871  ← 并行 + sibling abort</code></pre>
+
+<p>三层结构：<strong>ToolExecutor</strong>（执行+校验+策略）→ <strong>ToolProviderManager</strong>（按优先级路由到 provider）→ <strong>ToolProviderController</strong>（每种工具类型的实际执行器）。Executor 负责「该不该跑、怎么跑」，Manager 负责「找谁跑」，Provider 负责「真跑」。</p>
+
+<h2>五种 Provider——工具从哪来</h2>
+
+<div class="file-ref"><span class="path">core/tool/provider_manager.py</span> · <code>PROVIDER_ORDER</code> 第 30 行</div>
+
+<pre><code>PROVIDER_ORDER = [
+    BUILTIN,        # 平台内置工具（最高优先级）
+    API,            # 租户自建 HTTP API 工具（Webhook / OpenAPI）
+    PYTHON,         # 租户自建 Python 工具
+    TOOL_TEMPLATE,  # 卡片 DSL 工具（后端进程内产出卡片载荷）
+    MCP,            # MCP 协议工具（外部 server）
+    FRONTEND,       # 前端动态注册的 UI 交互工具（最低优先级）
+]</code></pre>
+
+<p>同名工具冲突时，排在前面的 provider 优先——<strong>内置 > API > Python > 卡片 > MCP > 前端</strong>。这意味着如果你排障「自定义工具被内置工具盖掉了」，查这个名字是不是和内置工具重名。<code>get_tool</code>（provider_manager.py:79）会先 <code>resolve_canonical_tool_name</code> 把 LLM 返回的 function name 映射到内部 runtime 名，再按优先级找。</p>
+
+<div class="debug-tip">「模型调了工具但行为不对」时，先确认它调的是哪个 provider 的同名工具——<code>get_tool</code> 返回的 <code>(descriptor, provider)</code> 里 <code>descriptor.provider_type</code> 就是答案。别假设名字对就是对。</div>
+
+<h2>execute_tools：批量执行的三道关</h2>
+
+<div class="file-ref"><span class="path">core/tool/executor.py</span> · <code>execute_tools</code> 第 772 行</div>
+
+<p>AgentLoop 调的就是这个方法。它过三道关：</p>
+
+<h3>关 1：schema 预检（prevalidate_tool_calls）</h3>
+
+<pre><code>prevalidation = self.prevalidate_tool_calls(tool_calls, ctx)   executor.py:787
+if not prevalidation.get("passed", True):
+    return self._schema_validator._schema_blocked_results(tool_calls, prevalidation)</code></pre>
+
+<p>整批工具的 schema 一次性预检。<strong>不通过 → 整批都不跑</strong>，直接返回每个工具一个 <code>is_error=True</code> 的 blocked 结果。这是「模型传的参数结构就不对」的落点——工具根本没被执行，不是执行后报错。</p>
+
+<h3>关 2：策略分组（_partition_by_policy）</h3>
+
+<pre><code>groups = self._policy_enforcer._partition_by_policy(normalized_calls)  executor.py:814</code></pre>
+
+<p>把工具按策略分进若干 group。同 group 内可以并行（如果都允许），不同 group 串行。单个工具的 group 直接跑。这一步决定了「哪些工具能同时跑」。</p>
+
+<h3>关 3：并行执行 + sibling abort</h3>
+
+<pre><code>if parallel_calls:
+    tracked_results = await self._run_parallel_with_abort(parallel_calls, _run_one, max_parallel)
+if serial_calls:
+    for call in serial_calls:
+        if abort:  # 上一个关键工具失败了 → 跳过剩余
+            → 返回 is_error=True, error_msg="sibling_abort"
+        tracked = await _run_one(call)
+        if tracked.is_error and self._is_critical_tool(tracked.tool_name):
+            abort = True</code></pre>
+
+<p>并行组用 <code>asyncio.gather</code> + <code>Semaphore(max_parallel)</code> 跑。串行组（<code>is_concurrency_safe=False</code> 的工具）一个个跑。<strong>关键工具</strong>（<code>sandbox</code> / <code>code_interpreter</code> / <code>bash</code> / <code>shell</code>，executor.py:865）失败会触发 <strong>sibling abort</strong>——同批次剩余工具直接跳过，返回 <code>error_msg="sibling_abort"</code>。</p>
+
+<div class="debug-tip">「模型调了 3 个工具，只跑了 1 个，另外 2 个显示 sibling_abort」——这是<strong>设计行为</strong>，不是 bug。查那个先跑的关键工具为什么 <code>is_error=True</code>。非关键工具失败<strong>不会</strong>触发 sibling abort。</div>
+
+<h2>🔴 is_error 是怎么判的——最该记住的一段</h2>
+
+<div class="file-ref"><span class="path">core/tool/executor.py</span> · <code>_execute_single_tracked</code> 第 677-685 行</div>
+
+<pre><code>is_error = False
+if isinstance(result, dict):
+    error_value = result.get("error")
+    is_error = (
+        result.get("is_error") is True
+        or result.get("success") is False
+        or error_value not in (None, "", [], {})
+    )</code></pre>
+
+<p>这是 <code>ToolExecutionResult.is_error</code> 的判定逻辑——<strong>三个条件取或</strong>：</p>
+
+<ol>
+  <li><code>result["is_error"] is True</code>——工具自己显式标了错</li>
+  <li><code>result["success"] is False</code>——工具用 success 字段标了失败</li>
+  <li><code>result["error"]</code> 非空（不是 None/空串/空列表/空 dict）——有 error 字段就算</li>
+</ol>
+
+<p>注意第 3 条：<strong>只要 result 里有非空的 <code>error</code> 键就算失败</strong>，不管 success 是不是 True。所以工具返回 <code>{"success": True, "error": "some warning"}</code> 也会被判成 <code>is_error=True</code>。排障「工具明明成功了但 AgentLoop 当失败处理」时，查 result 里有没有意外的 <code>error</code> 字段。</p>
+
+<div class="concept">
+  <p class="tag">和上一课的连接</p>
+  <p>AgentLoop 第 ④ 阶段只看 <code>tracked.is_error</code>（loop.py:674）来决定 <code>has_tool_errors</code>，但<strong>不因此终止循环</strong>——错误结果照常追加进消息历史给模型看。所以 <code>is_error=True</code> 的工具结果会变成一段 <code>{"type":"tool_result","is_error":true,"content":"..."}</code> 喂回模型，模型自己决定要不要重试。这条链路从 <code>executor.py:681</code> 的判定开始。</p>
+</div>
+
+<h2>execute() 单工具的五道门</h2>
+
+<div class="file-ref"><span class="path">core/tool/executor.py</span> · <code>execute</code> 第 463 行</div>
+
+<p>每个工具走 <code>execute()</code>，过五道门才真正跑到 <code>manager.invoke</code>：</p>
+
+<pre><code>门 1: manager.get_tool(tool_name) is None?
+       → 是：返回 TOOL_NOT_FOUND（is_error，不抛异常）        executor.py:487
+
+门 2: manager.is_runtime_executable(tool_name) is False?
+       → 是：返回 runtime_tool_view_reject（工具在当前视图不可执行）executor.py:500
+
+门 3: _maybe_suspend_for_blocking（确认门 / 挂起）
+       → 工具声明 blocking=USER_CONFIRM 时停下等人确认
+       → 被拒/取消/超时 → 返回结构化失败（不抛异常！）       executor.py:337
+       → AG-UI 下结构性恒关；开关 confirm_gate_enabled() 控制
+
+门 4: _schema_validator._pre_execute_validation
+       → schema 校验失败 → 返回 gate_error（is_error）        executor.py:514
+
+门 5: manager.invoke(tool_name, input, ctx)
+       → 真正调 provider.invoke 跑工具
+       → 抛异常 → tool_error_result 包装成结构化失败返回       executor.py:534
+       → 成功 → _postprocess_result_with_schema（压缩/校验输出）</code></pre>
+
+<p><strong>关键点：前四道门失败都返回结构化 dict（is_error），不抛异常</strong>。只有第五道门 <code>manager.invoke</code> 抛异常时，才被 <code>except</code> 捕获包装成 <code>tool_error_result</code>。所以对 AgentLoop 来说，<code>_execute_tools</code> 几乎不会抛异常——除非 <code>tool_executor</code> 本身没配置（loop.py:1432 的 <code>ValueError</code>）。</p>
+
+<div class="debug-tip">这解释了上一课的「单工具 is_error 不终止循环」：<code>execute()</code> 把所有失败都包装成结构化 dict 返回，<code>_execute_single_tracked</code> 再包装成 <code>ToolExecutionResult(is_error=True)</code>。AgentLoop 看到的是「有错误的结果」而不是「异常」，所以照常追加进消息历史。只有 <code>_execute_tools</code> 自己抛异常（极罕见）才走 loop.py:698 的 except 分支终止。</div>
+
+<h2>确认门（confirm gate）：一个容易误判的挂起</h2>
+
+<div class="file-ref"><span class="path">core/tool/executor.py</span> · <code>_maybe_suspend_for_blocking</code> 第 337 行</div>
+
+<p>工具可以在 <code>ToolSpec.execution.blocking</code> 声明 <code>USER_CONFIRM</code>——执行前要人确认。这时 executor 会创建一个挂起项，<strong>停住等人确认</strong>（<code>manager.wait</code>，executor.py:419）。</p>
+
+<p>三种结局，<strong>全部返回结构化失败，不抛异常</strong>：</p>
+
+<ul>
+  <li><strong>超时</strong>（<code>TimeoutError</code>）→ <code>error_code=TIMEOUT</code>，提示「未收到确认，不要重试」</li>
+  <li><strong>用户取消</strong>（<code>CancelledError</code> + 挂起项状态为 CANCELLED）→ <code>error_code=POLICY_DENIED</code>，提示「用户取消，不要重试」</li>
+  <li><strong>用户拒绝</strong>（其他异常）→ <code>error_code=POLICY_DENIED</code>，提示「用户拒绝，不要重试」</li>
+</ul>
+
+<p>注释（executor.py:350）写得很直白：曾经这些会向上裸抛，穿透 <code>execute_tools</code> → <code>loop._execute_tool_batch</code>（那里 <code>except: raise</code>）→ <strong>整轮 run 炸、模型什么都收不到</strong>。现在改成结构化失败，让模型知道「用户拒绝了，别重试」而不是让对话崩掉。</p>
+
+<div class="debug-tip">「AI 调了个工具然后整轮对话崩了、模型没收到任何结果」——如果你在旧版本上，查是不是确认门抛了没被捕获的异常。新版本已修。但如果你看到「工具显示被拒但 AI 还在重试同一个工具」，查模型有没有读懂 <code>error_code=POLICY_DENIED</code> 的「不要重试」提示——这是模型行为问题，不是工具层问题。</div>
+
+<h2>ToolExecutionResult：最终交付给 AgentLoop 的东西</h2>
+
+<div class="file-ref"><span class="path">core/tool/types.py</span> · <code>ToolExecutionResult</code> 第 231 行</div>
+
+<pre><code>@dataclass
+class ToolExecutionResult:
+    tool_id: str           # = tool_use.id（LLM 给的调用 id）
+    tool_name: str
+    tool_input: dict       # 实际传入的参数
+    result: ToolResult | dict   # 工具返回的原始结果
+    is_error: bool = False      # ← executor.py:681 判定的
+    error_msg: str | None = None</code></pre>
+
+<p>AgentLoop 拿到这个后，在 loop.py:739 用 <code>_tool_results_to_blocks</code> 转成 <code>tool_result</code> block 追加进消息历史，同时 yield <code>TOOL_RESULT</code> 事件给 SSE。<code>is_error</code> 字段会进 block，模型能看到。</p>
+
+<h2>排障归因表（增量）</h2>
+
+<table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">症状</th>
+  <th style="padding:0.4rem;">最可能落点</th>
+  <th style="padding:0.4rem;">确认方式</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">「工具未找到」</td>
+  <td style="padding:0.4rem;">门 1：TOOL_NOT_FOUND</td>
+  <td style="padding:0.4rem;">查 manager.get_tool；名字是否和 provider 注册名一致；是否被高优先级 provider 盖掉</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">整批工具都没跑</td>
+  <td style="padding:0.4rem;">关 1：schema 预检不过</td>
+  <td style="padding:0.4rem;">看 prevalidation 结果；模型传的参数结构是否对</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工具显示 sibling_abort</td>
+  <td style="padding:0.4rem;">关 3：关键工具失败触发 abort</td>
+  <td style="padding:0.4rem;">查同批次先跑的关键工具（sandbox/bash/shell）为何 is_error</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工具成功了但被当失败</td>
+  <td style="padding:0.4rem;">is_error 判定第 3 条</td>
+  <td style="padding:0.4rem;">查 result 里有没有非空 error 字段（即使 success=True）</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工具被拒但 AI 还在重试</td>
+  <td style="padding:0.4rem;">确认门 POLICY_DENIED + 模型没读懂提示</td>
+  <td style="padding:0.4rem;">看 error_code=POLICY_DENIED；模型行为问题非工具层</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工具在当前视图不可执行</td>
+  <td style="padding:0.4rem;">门 2：runtime_tool_view_reject</td>
+  <td style="padding:0.4rem;">查 is_runtime_executable；工具视图（RuntimeToolView）配置</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">自定义工具被内置盖掉</td>
+  <td style="padding:0.4rem;">PROVIDER_ORDER 优先级</td>
+  <td style="padding:0.4rem;">查同名工具；get_tool 返回的 provider_type</td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;">工具结果太大被截断</td>
+  <td style="padding:0.4rem;">_postprocess_result_with_schema 压缩</td>
+  <td style="padding:0.4rem;">看 result 有没有 truncated/compressed/ref_id 字段</td>
+</tr>
+</tbody>
+</table>
+
+<h2>检索检验</h2>
+
+<div class="quiz">
+  <p class="q-label">排障检验</p>
+  <p class="question">模型同时调了 3 个工具：search、bash、format。bash 执行后返回 is_error=True，search 和 format 显示 sibling_abort 没跑。AgentLoop 没有终止循环，模型收到了 bash 的错误结果和另外两个的 sibling_abort。这是 bug 吗？该查什么？</p>
+  <ul class="options">
+    <li>是 bug，sibling_abort 不该跳过后续工具，查 _partition_by_policy</li>
+    <li>是 bug，bash 失败应该终止整个 AgentLoop，查 loop.py 的 except 分支</li>
+    <li data-correct="1">不是 bug，bash 是关键工具，失败触发 sibling abort 是设计行为；该查 bash 为何 is_error</li>
+    <li>不是 bug，但该查 search 和 format 的 schema 为什么没过预检</li>
+  </ul>
+  <p class="feedback">bash 在 _CRITICAL_TOOLS（executor.py:865）里。关键工具 is_error=True 会触发 sibling abort（executor.py:856-857 / 897-899），同批次剩余工具被跳过并标 sibling_abort——这是设计行为，不是 bug。AgentLoop 不终止循环也是设计：单工具 is_error 不终止（上一课讲过），错误结果照常回传模型。该查的是 bash 为什么 is_error=True——看 bash 返回的 result dict 里 is_error/success/error 哪个触发了 executor.py:681 的判定。schema 预检不过会整批都不跑（包括 bash），和「bash 跑了」矛盾。</p>
+</div>
+
+<h2>推荐主源</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/core/tool/executor.py</span> · <code>execute_tools</code> 第 772-860 行 + <code>execute</code> 第 463-541 行 + <code>_execute_single_tracked</code> 第 591-745 行</div>
+
+<p>重点读：第 677-685 行的 <code>is_error</code> 判定（三个条件取或）、第 814-858 行的分组+sibling abort、第 337-452 行的确认门、第 865 行的 <code>_CRITICAL_TOOLS</code>。然后对照 <code>core/tool/provider_manager.py</code> 第 30 行的 <code>PROVIDER_ORDER</code> 和第 215 行的 <code>invoke</code> 理解工具怎么被路由到 provider。</p>
+
+<p><code>core/tool/types.py</code> 第 231 行的 <code>ToolExecutionResult</code> 和第 246 行的 <code>ToolContext</code> 也值得看——后者是工具执行的身份上下文（session_id / user_id / agent_id / extra），排障「工具拿到了错的租户上下文」时查这里。</p>
+
+<h2>下一课</h2>
+
+<p>工具层讲完了，下一课回到 Agent 编排主线：<strong>Workflow DSL + 节点执行器</strong>（<code>core/agent/workflow_dsl.py</code> + <code>workflow_node_executors.py</code>）。工作流是 ZenFlux 的另一种执行模式——不是 LLM 自主调工具，而是人画好的 DAG 节点链。看节点注册表、节点执行器怎么分发、和工作流工具节点怎么接回工具层。</p>
+
+<footer class="lesson-foot">
+  <p>有不清楚的地方？直接问我——我是你的老师，可以随时打断、追问、要更多例子。</p>
+  <p><a href="../MISSION.md">使命</a> · <a href="../RESOURCES.md">资源清单</a> · <a href="../NOTES.md">教学笔记</a> · <a href="0003-agent-loop.html">← 上一课</a></p>
+</footer>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

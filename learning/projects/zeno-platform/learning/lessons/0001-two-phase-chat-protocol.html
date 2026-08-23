@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 1 课 · 两段式对话协议——排障的起点</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="lesson-head">
+  <p class="eyebrow">第 1 课 · AI 链路排障</p>
+  <h1>两段式对话协议——排障的起点</h1>
+  <p class="meta">阅读约 8 分钟 · 主源：<code>http_server/routers/chat.py</code></p>
+</header>
+
+<p>你前端精通，所以先不讲 SSE 是什么。这一课只讲一件事：<strong>在这个项目里，一次对话从浏览器到 Agent 引擎，入口长什么样、为什么是这个样子</strong>。这是后面所有排障的起点——报错也好、回复不对也好，你都得先知道请求是从哪个门进来的。</p>
+
+<h2>为什么是「两段式」</h2>
+
+<p>大多数 FastAPI 教程里，流式接口是一个 <code>POST /chat</code> 直接返回 <code>StreamingResponse</code>，请求挂着等流完。这个项目<strong>不这么干</strong>。它把一次对话拆成两个 HTTP 调用：</p>
+
+<ol>
+  <li><strong>Phase 1 — 提交</strong>：<code>POST /api/v1/chat</code>，立即返回一个 <code>session_id</code>，<em>不等 Agent 跑完</em>。</li>
+  <li><strong>Phase 2 — 订阅</strong>：<code>GET /api/v1/chat/{session_id}/progress</code>，SSE 流，拿历史事件 + 实时事件。</li>
+</ol>
+
+<p>为什么拆？因为 Agent 一轮可能跑几十秒甚至几分钟（LLM 调用、工具执行、子代理……）。一个 HTTP 连接挂这么久，中间任何一跳网关/代理超时都会断。拆开后，Phase 1 几乎瞬间返回，Phase 2 是纯只读订阅，<strong>断了能用 <code>Last-Event-ID</code> 重连</strong>，不丢事件。</p>
+
+<div class="debug-tip">排障时第一个要确认的就是：<em>症状出在 Phase 1 还是 Phase 2？</em>「提交没反应」和「流断了」是完全不同的故障域——前者在 <code>chat_service.submit()</code> 之前，后者在 <code>session_service.reconnect_event_stream()</code> 那条线。</div>
+
+<h2>Phase 1 的代码骨架</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/http_server/routers/chat.py</span> · 第 176–198 行</div>
+
+<pre><code>@router.post("", response_model=APIResponse[ChatSubmitResult])
+async def submit_chat(
+    body: ChatSubmitRequest,
+    auth: AuthDep,
+    _tenant: TenantContextDep,
+) -&gt; APIResponse[ChatSubmitResult]:
+    from http_server.idempotency import run_idempotent_http
+
+    data = await run_idempotent_http(
+        domain="chat",
+        idem_key=body.idempotency_key,
+        user_id=auth.sub,
+        ttl_config_key="chat_idempotency",
+        execute=lambda: _do_submit(body, auth.sub),
+    )
+    return APIResponse.success(ChatSubmitResult(**data))</code></pre>
+
+<p>这个函数很短，但信息密度高。逐行看：</p>
+
+<h3>三个参数 = 三道门</h3>
+
+<p><code>body: ChatSubmitRequest</code> 是请求体，FastAPI 自动按 Pydantic schema 校验——字段不对直接 422，根本进不了函数体。你排障看到 422，<strong>先去看 <code>ChatSubmitRequest</code> 的字段定义</strong>（同文件第 38 行起），别去翻 service。</p>
+
+<p><code>auth: AuthDep</code> 是鉴权依赖。<code>AuthDep</code> 的定义在第 35 行：</p>
+
+<pre><code>AuthDep = Annotated[AdminTokenPayload, Depends(require_access_token)]</code></pre>
+
+<p>这是 FastAPI 的 <code>Annotated[..., Depends(...)]</code> 写法——<code>require_access_token</code> 是个函数（<code>http_server/dependencies.py</code> 第 256 行），它从 <code>Authorization: Bearer ...</code> 头里解析 JWT，返回 <code>AdminTokenPayload</code>。解析失败抛 <code>TokenInvalidError</code>，FastAPI 转成 401。<strong>你排障看到 401，问题在这条依赖链上，不在 <code>submit_chat</code> 里。</strong></p>
+
+<p><code>_tenant: TenantContextDep</code> 是租户上下文依赖（<code>http_server/tenant_deps.py</code> 第 75 行）。它从 JWT 的 <code>tenant_id</code> 出发，激活 PostgreSQL 的 <code>search_path</code>——这样后面的 DB 查询自动落到对的租户 schema。变量名带下划线 <code>_tenant</code> 表示「我不用它的值，但我需要它的副作用」。<strong>看到 400「缺少 tenant_id」，是这条依赖在报，不是业务代码。</strong></p>
+
+<div class="concept">
+  <p class="tag">关键模式</p>
+  <p>这个项目里几乎每个路由都挂 <code>AuthDep</code> + <code>TenantContextDep</code>。它们是<strong>横切关注点</strong>——鉴权和租户隔离不在业务函数里手写，而是靠 FastAPI 依赖注入在进函数体之前就搞定。排障时：4xx 状态码先归因到哪条依赖，再看业务逻辑。</p>
+</div>
+
+<h3>幂等层</h3>
+
+<p>注意 <code>run_idempotent_http</code> 这一层。如果请求带了 <code>idempotency_key</code>，重复提交（双击、网络重试）会返回首次结果，不重复起会话；首次还在跑时重复请求返回 409。不带 key 则不去重，行为与旧链路一致。</p>
+
+<div class="debug-tip">如果用户反馈「点了一下发了两条」，先确认前端有没有传 <code>idempotency_key</code>。没传的话后端不会去重——这不是 bug，是契约。</div>
+
+<h3>真正干活的是 <code>_do_submit</code></h3>
+
+<p>第 165 行的 <code>_do_submit</code> 调 <code>get_chat_service().submit(...)</code>，后者（<code>services/chat_service.py</code>）其实就是 <code>chat(stream=False, _await_agent=False)</code> 的别名——<strong>detached 执行</strong>：起一个后台任务跑 Agent，立即返回 <code>session_id</code>。Agent 跑的过程中往事件流里写事件，Phase 2 来订阅。</p>
+
+<h2>Phase 2 的代码骨架</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/http_server/routers/chat.py</span> · 第 200–223 行</div>
+
+<pre><code>@router.get("/{session_id}/progress", response_model=None)
+async def stream_chat_progress(
+    session_id: str,
+    _auth: AuthDep,
+    _tenant: TenantContextDep,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    after_seq: int | None = None,
+):
+    resume_from = _parse_after_seq(last_event_id, after_seq)
+    svc = get_chat_service()
+
+    async def _events():
+        try:
+            async for envelope in svc.subscribe(session_id, after_seq=resume_from):
+                yield envelope
+        except SessionNotFoundError:
+            yield _session_not_found_envelope(session_id)
+
+    return wire_streaming_response(_events())</code></pre>
+
+<p>几个要点：</p>
+
+<ul>
+  <li><code>last_event_id</code> 用 <code>Header(alias="Last-Event-ID")</code> 从请求头取——浏览器 <code>EventSource</code> 断线重连时会自动带这个头。<code>after_seq</code> 是显式查询参数兜底。两者都走 <code>_parse_after_seq</code> 归一成「从第几条事件开始重放」。</li>
+  <li><code>svc.subscribe()</code> 返回一个 <code>AsyncIterator[dict]</code>——<strong>注意它 yield 的是 wire 信封 dict，不是 SSE 字符串</strong>。SSE 帧的渲染在 <code>wire_streaming_response</code> 里做。</li>
+  <li><code>SessionNotFoundError</code> 不抛 HTTP 异常，而是 yield 一条 <code>system_error</code> 事件收尾——这样 <code>EventSource</code> 和 <code>fetch</code> 客户端都能读到「会话不存在」，而不是看到一个连接错误。</li>
+</ul>
+
+<h2>SSE 帧渲染是共享的</h2>
+
+<p><code>wire_streaming_response</code> 在 <code>http_server/sse_wire.py</code>。这个文件是<strong>全后端五条流共用</strong>的：chat 浏览器面、开放平台对话、workflow 画布、skill copilot、mcp playground——同一个 wire 信封 JSON，只在外层包一层 SSE 行。</p>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/http_server/sse_wire.py</span> · 第 41–54 行</div>
+
+<pre><code>def format_wire_sse(envelope: dict[str, Any]) -&gt; str:
+    wire_type = str(envelope.get("type", "message"))
+    lines: list[str] = []
+
+    seq = envelope.get("seq")
+    if seq is not None:
+        lines.append(f"id: {seq}")
+    elif envelope.get("event_uuid"):
+        lines.append(f"id: {envelope['event_uuid']}")
+
+    lines.append(f"event: {sse_event_name(wire_type)}")
+    lines.append(f"data: {json.dumps(envelope, ensure_ascii=False)}")
+    return "\n".join(lines) + "\n\n"</code></pre>
+
+<p>信封结构：<code>{type, session_id, seq, data, _meta}</code>。<code>seq</code> 就是 <code>id:</code> 行的值，驱动 <code>Last-Event-ID</code> 重连。<code>event:</code> 行是 wire <code>type</code> 经 <code>sse_event_name</code> 映射后的名字（心跳呈现为 <code>heartbeat</code>）。<code>data:</code> 是整个信封 JSON。</p>
+
+<div class="debug-tip">排障 SSE 问题时，先在浏览器 DevTools 的 Network 面板看 <code>event:</code> 行的类型——它对应 <code>EVENT-CATALOG.md</code> 里的事件类型。知道类型就能反查是 core 哪个模块产出的。</div>
+
+<h2>完整链路一图</h2>
+
+<pre><code>浏览器
+  │
+  ├─ POST /api/v1/chat ─────────────────────┐
+  │   (AuthDep + TenantContextDep 把关)      │
+  │                                         ▼
+  │                              chat_service.submit()
+  │                              = chat(stream=False, _await_agent=False)
+  │                              → 起后台任务跑 AgentLoop
+  │                              → 立即返回 {session_id, conversation_id}
+  │                                         │
+  │ ◄───────────────────────────────────────┘
+  │
+  ├─ GET /api/v1/chat/{session_id}/progress ─────┐
+  │   (Last-Event-ID / after_seq 重连)           │
+  │                                              ▼
+  │                              chat_service.subscribe()
+  │                              → session_service.reconnect_event_stream()
+  │                              → yield wire 信封 dict
+  │                                              │
+  │                              sse_wire.format_wire_sse()
+  │                              → id: / event: / data: 帧
+  │                                              │
+  │ ◄────────────────────────────────────────────┘
+  │  (SSE 流：历史重放 + 实时事件，直到 Agent 结束)</code></pre>
+
+<h2>检索检查</h2>
+
+<p>下面这道题测的是「你能不能把故障归因到对的层」。排障的核心技能不是记住每个函数，而是<strong>看到症状能快速锁定层</strong>。</p>
+
+<div class="quiz">
+  <p class="q-label">排障检索</p>
+  <p class="question">用户反馈「点发送后页面一直转圈，但控制台没有任何 4xx/5xx」。最该先查哪一层？</p>
+  <ul class="options">
+    <li>Phase 2 的 SSE 流——<code>subscribe()</code> 没把历史事件重放出来</li>
+    <li data-correct="1">Phase 1 的 <code>submit()</code>——请求可能根本没成功返回 <code>session_id</code></li>
+    <li>AgentLoop——Agent 卡在工具调用里没产出事件</li>
+    <li>SSE 帧渲染——<code>format_wire_sse</code> 把信封序列化坏了</li>
+  </ul>
+  <p class="feedback">提示：「一直转圈 + 没有 4xx/5xx」说明前端在等一个永远不会来的响应。如果 Phase 1 成功返回了 <code>session_id</code>，前端就该去开 Phase 2 的 SSE 连接了——而 SSE 连不上通常会在 Network 面板显示出来。所以最可能是 Phase 1 请求挂住了（比如 <code>run_idempotent_http</code> 在等一个不回来的锁，或 <code>chat_service.submit()</code> 抛了没被 FastAPI 捕获的异常导致连接静默断开）。先看后端日志里有没有这次请求的「对话请求」日志行（<code>chat_service.py</code> 第 2531 行），确认请求到底进没进 service。</p>
+</div>
+
+<h2>推荐主源</h2>
+
+<p>这节课最值得你打开读一遍的文件：</p>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/http_server/routers/chat.py</span> · 全文 309 行，通读一遍</div>
+
+<p>重点看：<code>ChatSubmitRequest</code> 的字段（理解前端能传什么）、<code>submit_chat</code> / <code>stream_chat_progress</code> 两个路由的依赖链、<code>_parse_after_seq</code> 的重连逻辑。</p>
+
+<p>协议设计文档：<code>docs/engineering/protocols/CHAT-TWO-PHASE.md</code>（讲为什么拆两段、重连语义、与 gRPC <code>ReconnectStream</code> 的对齐）。</p>
+
+<h2>下一步</h2>
+
+<p>下一课进 <code>chat_service.chat()</code>——从 HTTP 进 services 的第一跳，看那「10 步流程」每一步在做什么、会在哪一步坏。<a href="0002-chat-service-flow.html">第 2 课 · chat_service 的 10 步流程</a>（待写）</p>
+
+<footer class="lesson-foot">
+  <p>有不清楚的地方？直接问我——我是你的老师，可以随时打断、追问、要更多例子。</p>
+  <p><a href="../MISSION.md">使命</a> · <a href="../RESOURCES.md">资源清单</a> · <a href="../NOTES.md">教学笔记</a></p>
+</footer>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

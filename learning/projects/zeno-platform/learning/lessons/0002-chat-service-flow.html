@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 2 课 · chat_service 的 10 步流程</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="lesson-head">
+  <p class="eyebrow">第 2 课 · AI 链路排障</p>
+  <h1>chat_service 的 10 步流程——从 HTTP 进 services 的第一跳</h1>
+  <p class="meta">阅读约 10 分钟 · 主源：<code>services/chat_service.py</code> · <a href="0001-two-phase-chat-protocol.html">← 上一课</a></p>
+</header>
+
+<p>上一课你看到了 HTTP 路由层：<code>POST /chat</code> 调 <code>chat_service.submit()</code>，后者就是 <code>chat(stream=False, _await_agent=False)</code> 的别名。这一课我们走进 <code>chat()</code> 这个 2900 行函数——它是<strong>所有对话的必经之路</strong>，不管从 HTTP 还是 gRPC 进来都汇到这里。</p>
+
+<p>函数虽然长，但结构是清晰的 10 步。你排障时要做的，就是<strong>根据症状判断卡在哪一步</strong>。</p>
+
+<h2>10 步全景</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/services/chat_service.py</span> · <code>chat()</code> 第 2418 行起</div>
+
+<pre><code>chat() 10 步流程（行号是 chat_service.py 的）
+
+ 1. 解析 agent_id + 状态门控          ~2550
+    agent 不存在 → ValueError
+    agent 状态非 active/pending_review/draft → ValueError
+
+ 2. 创建/校验 Conversation             ~2573
+    get_or_create_conversation
+    会话绑定的 agent 与本次不符 → ValueError
+
+ 3. 生成 assistant_message_id          ~2602
+    uuid4()
+
+ 4. 处理文件                            ~2606
+    URL 引用 → 模型消费
+    storage_key → 归属校验 + 重签 → 绑定工作流消费
+
+ 5. 标准化消息                          ~2675
+    normalize_message_format → content blocks
+
+ 5.5 BEFORE_DISPATCH hook              ~2678
+    可 BLOCK（拦截）或 MODIFY（改消息）
+
+ 6. 检查并发 + 创建 Session             ~2714
+    session_pool.check_can_create_session
+    session_service.create_session → session_id
+
+ 7. 保存用户消息                        ~2730
+    MessageRepo.create_message(role="user")
+
+ 8. 创建 Assistant 占位                 ~2761
+    MessageRepo.create_message(role="assistant", status="processing")
+
+ 9. 资源准备（detached 模式在这里分流）   ~2788
+    _prepare_agent_for_session:
+      - 从 AgentPool 获取 Agent
+      - MCP 建连
+      - 临时能力装配（API tools / 原生 tools / sub_agents / blocked）
+      - usage tracker
+      - session_pool 登记
+      - SESSION_START hook
+
+10. 调度执行                            ~2856
+    detached → asyncio.create_task(_prepare_then_run_detached) → 立即返回
+    同步   → _run_agent（等跑完）
+    流式   → _create_stream_generator（返回 AsyncGenerator）</pre></pre>
+
+<h2>步骤 1-2：验证与对话归属</h2>
+
+<p>第 1 步检查 agent 是否存在、状态是否可运行。第 2 步创建或校验 Conversation——这里有个<strong>容易踩的归属校验</strong>：</p>
+
+<div class="file-ref"><span class="path">services/chat_service.py</span> · 第 2584 行</div>
+
+<pre><code>if not is_new_conversation and bound_agent_id and bound_agent_id != pool_key:
+    raise ValueError("该会话属于其他智能体，请开启新会话")</code></pre>
+
+<p>一个会话创建时就绑定了 agent_id，后续轮次换了 agent 会被拒。排障时如果用户反馈「续接对话报错」，先确认前端有没有传对 <code>agent_id</code>。</p>
+
+<h2>步骤 4：文件处理的两条路</h2>
+
+<p>这是这个项目<strong>不一样</strong>的地方。文件引用有两种形态，走两条不同的消费路径：</p>
+
+<div class="concept">
+  <p class="tag">关键区分</p>
+  <p><strong>URL 引用</strong>（<code>file_url</code>）：直接传给模型，模型自己决定要不要看。<br>
+  <strong>storage_key 引用</strong>：服务端校验归属（前缀匹配用户目录）→ 重签 presigned URL → 传给<strong>绑定工作流</strong>消费（工作流节点拿的是重签后的 URL）。</p>
+  <p>两者不互斥：同一个文件可以同时走两条路。但如果你排障「工作流拿不到文件」，先查前端传的是 <code>storage_key</code> 还是裸 <code>file_url</code>——后者工作流消费不到。</p>
+</div>
+
+<h2>步骤 5.5：BEFORE_DISPATCH hook</h2>
+
+<p>在标准化消息之后、创建 Session 之前，有一个 <code>BEFORE_DISPATCH</code> 钩子。它可以做两件事：</p>
+
+<ul>
+  <li><strong>BLOCK</strong>：拦截消息，返回 <code>{status: "blocked"}</code> 或 yield 一条 error 事件。</li>
+  <li><strong>MODIFY</strong>：改写消息内容。</li>
+</ul>
+
+<div class="debug-tip">如果用户反馈「消息发出去就被拒了，但不是 4xx」，查一下有没有装 BEFORE_DISPATCH hook 在拦——它的拦截走的是正常返回路径，不是 HTTP 异常。</div>
+
+<h2>步骤 6-8：Session 与消息持久化</h2>
+
+<p>第 6 步先检查并发（<code>session_pool.check_can_create_session</code>），再创建 Session。第 7、8 步保存用户消息和 Assistant 占位。</p>
+
+<p>这里有个<strong>值得注意的 DB session 拆分</strong>：</p>
+
+<div class="file-ref"><span class="path">services/chat_service.py</span> · 第 2740-2743 行</div>
+
+<pre><code># 注意：MessageRepo.create_message 内部会 commit。
+# 这里将 user / assistant 写入拆成两个独立 session，
+# 避免同一 session 在多次 commit 后连接重取导致租户 search_path 漂移。</pre></pre>
+
+<p>这是多租户架构的细节：<code>search_path</code> 是连接级的，commit 后连接可能被池重取，重取的连接不带 <code>search_path</code>。所以每条消息用独立的 DB session。排障时如果看到「消息写到了错的租户 schema」，查这条线。</p>
+
+<p>第 7-8 步失败会清理已创建的 Session（<code>end_session(status="failed")</code>）并抛 <code>ValueError</code>。</p>
+
+<h2>步骤 9：资源准备——detached 的分水岭</h2>
+
+<p>这是整个函数<strong>最关键的分叉点</strong>。第 2792 行：</p>
+
+<pre><code>if (not stream) and (not _await_agent):
+    _detached_task = asyncio.create_task(
+        self._prepare_then_run_detached(...)
+    )
+    self._session_tasks.register(session_id, _detached_task)
+    return {
+        "task_id": session_id,
+        "conversation_id": conversation_id,
+        "message_id": assistant_message_id,
+        "status": "running",
+    }</pre></pre>
+
+<p>两段式的 <code>submit()</code> 走的就是这条：<code>stream=False, _await_agent=False</code> → 把步骤 9（资源准备）和步骤 10（执行 Agent）<strong>整段塞进一个后台 <code>asyncio.Task</code></strong>，立即返回 <code>session_id</code>。</p>
+
+<p>这意味着：<strong>资源准备失败不会抛给 HTTP 调用方</strong>——submit 已经返回了。失败怎么通知前端？走进度流：</p>
+
+<div class="file-ref"><span class="path">services/chat_service.py</span> · <code>_prepare_then_run_detached</code> 第 3107 行起</div>
+
+<pre><code>except MCPRequiredError:
+    await self._emit_prepare_error(
+        session_id, conversation_id,
+        "mcp_required",
+        "所需 MCP 服务不可用，请检查 MCP 配置后重试",
+    )
+    return
+except Exception:
+    # _prepare_agent_for_session 已记录日志并完成清理；
+    # 此处只负责经进度流通知前端。
+    await self._emit_prepare_error(
+        session_id, conversation_id,
+        "resource_error",
+        "资源准备失败，请稍后重试",
+    )
+    return</pre></pre>
+
+<div class="debug-tip">这是排障里<strong>最容易误判的一类故障</strong>：前端看到 Phase 1 成功返回了 <code>session_id</code>，但 Phase 2 SSE 流里第一条就是 <code>error</code> 事件，说「资源准备失败」。你会以为是 Agent 执行出错，其实是步骤 9 的 MCP 建连或 Agent 获取失败。看 <code>error_type</code> 字段：<code>mcp_required</code> vs <code>resource_error</code> 能帮你区分。</div>
+
+<h2>步骤 9 内部：临时能力装配的顺序</h2>
+
+<p><code>_prepare_agent_for_session</code>（第 2965 行）里有一串临时能力装配，<strong>顺序很重要</strong>：</p>
+
+<pre><code>1. MCP 建连          _setup_session_mcp_safe
+2. API tools 装配     _apply_temporary_api_tools      ← 并集
+3. 原生 tools 装配    _apply_temporary_native_tools   ← 并集
+4. sub_agents 装配    _apply_temporary_sub_agents     ← 并集
+5. blocked tools 差集 _apply_blocked_tool_names       ← 差集（必须最后！）</pre></pre>
+
+<div class="file-ref"><span class="path">services/chat_service.py</span> · 第 3022-3024 行</div>
+
+<pre><code># ⚠ **必须放在全部临时能力装配之后**：上面几步做的都是并集，本步是差集。
+# 顺序反了会被后面的并集把刚摘掉的名字加回来。</pre></code></pre>
+
+<p>排障「我明明 blocked 了这个工具，模型还是调了」——查装配顺序有没有被改坏。</p>
+
+<h2>步骤 10：三种执行模式</h2>
+
+<table style="width:100%; font-size:0.88rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">模式</th>
+  <th style="padding:0.4rem;">条件</th>
+  <th style="padding:0.4rem;">行为</th>
+  <th style="padding:0.4rem;">谁用</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;"><code>detached</code></td>
+  <td style="padding:0.4rem;"><code>not stream and not _await_agent</code></td>
+  <td style="padding:0.4rem;">create_task，立即返回</td>
+  <td style="padding:0.4rem;">HTTP <code>submit()</code> / gRPC 非流式</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;"><code>同步</code></td>
+  <td style="padding:0.4rem;"><code>not stream and _await_agent</code></td>
+  <td style="padding:0.4rem;">await <code>_run_agent</code>，等跑完</td>
+  <td style="padding:0.4rem;">内部调用 / API 集成</td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;"><code>流式</code></td>
+  <td style="padding:0.4rem;"><code>stream</code></td>
+  <td style="padding:0.4rem;">返回 <code>AsyncGenerator</code></td>
+  <td style="padding:0.4rem;">gRPC ChatStream / 旧 SSE</td>
+</tr>
+</tbody>
+</table>
+
+<p>注意：浏览器面（HTTP）的对话<strong>只走 detached</strong>。流式模式主要是 gRPC 在用。</p>
+
+<h2>_run_agent 的三个阶段</h2>
+
+<p>步骤 10 最终调 <code>_run_agent</code>（第 3978 行），它再调 <code>_run_agent_scoped</code>（第 3995 行）。后者分三个阶段：</p>
+
+<pre><code>阶段 1: 数据准备
+  1.1 加载历史消息（会话级缓存 + DB）
+      ⚠ AG-UI 挂起续跑：resume_messages 非空时整份替换，不拼接
+  1.2 前端变量由 VariablesInjector 在 ContextEngine.build 中注入
+
+阶段 2: 执行 Agent
+  2.1 发送 message_start 事件
+  2.2 上下文管理（裁剪历史消息）
+  2.3 调用 Agent.chat  ← 这里才真正进 core/agent/
+
+阶段 3: 完成处理
+  3.1 检查最终状态
+  3.2 发送完成事件
+  3.3 执行后台任务（如标题生成）
+  3.4 释放资源（Agent、更新池状态）</pre></pre>
+
+<p><strong>阶段 2.3 的 <code>Agent.chat</code> 是进 <code>core/agent/</code> 的入口</strong>——下一课讲 AgentLoop 时就从这里接。</p>
+
+<h2>排障归因速查表</h2>
+
+<table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">症状</th>
+  <th style="padding:0.4rem;">最可能步骤</th>
+  <th style="padding:0.4rem;">确认方式</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">「Agent 不存在」</td>
+  <td style="padding:0.4rem;">步骤 1</td>
+  <td style="padding:0.4rem;">看 agent_id 是否传对</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">「该会话属于其他智能体」</td>
+  <td style="padding:0.4rem;">步骤 2</td>
+  <td style="padding:0.4rem;">会话绑定 agent_id 与本次不符</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">工作流拿不到文件</td>
+  <td style="padding:0.4rem;">步骤 4</td>
+  <td style="padding:0.4rem;">前端传的是 file_url 还是 storage_key</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">消息被拦但非 4xx</td>
+  <td style="padding:0.4rem;">步骤 5.5</td>
+  <td style="padding:0.4rem;">查 BEFORE_DISPATCH hook</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">消息写到错的租户 schema</td>
+  <td style="padding:0.4rem;">步骤 7-8</td>
+  <td style="padding:0.4rem;">DB session 重取后 search_path 漂移</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">SSE 首条就是 error</td>
+  <td style="padding:0.4rem;">步骤 9（detached）</td>
+  <td style="padding:0.4rem;">看 error_type: mcp_required / resource_error</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">blocked 工具仍被调用</td>
+  <td style="padding:0.4rem;">步骤 9 装配顺序</td>
+  <td style="padding:0.4rem;">差集是否在并集之后</td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;">回复内容不对/工具没调</td>
+  <td style="padding:0.4rem;">_run_agent 阶段 2.3</td>
+  <td style="padding:0.4rem;">进 core/agent/（下一课）</td>
+</tr>
+</tbody>
+</table>
+
+<h2>检索检查</h2>
+
+<div class="quiz">
+  <p class="q-label">排障检索</p>
+  <p class="question">用户反馈：点发送后页面正常显示了「AI 正在思考」，但几秒后弹出「资源准备失败，请稍后重试」。Phase 1 返回了 session_id，没有 4xx/5xx。故障最可能卡在 10 步的哪一步？</p>
+  <ul class="options">
+    <li>步骤 1-2：agent 校验或对话归属校验失败</li>
+    <li>步骤 7-8：消息保存失败导致 Session 被清理</li>
+    <li data-correct="1">步骤 9：detached 后台任务里 MCP 建连或 Agent 获取失败</li>
+    <li>步骤 10：_run_agent 阶段 2.3 调 Agent.chat 时出错</li>
+  </ul>
+  <p class="feedback">关键线索：「AI 正在思考」说明 Phase 1 成功返回了 session_id（步骤 1-8 都过了），前端已经开了 SSE 订阅。错误消息「资源准备失败」是 _prepare_then_run_detached 里 _emit_prepare_error 发出的——它在步骤 9 的 _prepare_agent_for_session 抛异常时触发。如果是步骤 10 的 Agent.chat 出错，错误会从 AgentLoop 内部上报，不会带「资源准备失败」这个措辞。所以答案是步骤 9。下一步看 error_type：mcp_required 查 MCP 配置，resource_error 查 AgentPool / 日志堆栈。</p>
+</div>
+
+<h2>推荐主源</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/services/chat_service.py</span> · <code>chat()</code> 第 2418-2937 行（通读一遍，对照 10 步注释）</div>
+
+<p>重点看：步骤 9 的 detached 分流（第 2792 行）、<code>_prepare_then_run_detached</code> 的错误上报（第 3157 行起）、<code>_prepare_agent_for_session</code> 的装配顺序（第 2992 行起）。</p>
+
+<h2>下一步</h2>
+
+<p>下一课进 <code>core/agent/base.py</code> 的 AgentLoop——LLM → Tool → Repeat 的核心引擎，就是步骤 10 阶段 2.3 <code>Agent.chat</code> 真正干活的地方。<a href="0003-agent-loop.html">第 3 课 · AgentLoop 核心引擎</a>（待写）</p>
+
+<footer class="lesson-foot">
+  <p>有不清楚的地方？直接问我——我是你的老师，可以随时打断、追问、要更多例子。</p>
+  <p><a href="../MISSION.md">使命</a> · <a href="../RESOURCES.md">资源清单</a> · <a href="../NOTES.md">教学笔记</a> · <a href="0001-two-phase-chat-protocol.html">← 上一课</a></p>
+</footer>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
