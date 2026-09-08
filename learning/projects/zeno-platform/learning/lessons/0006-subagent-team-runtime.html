@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 6 课 · SubAgent / Team runtime</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="lesson-head">
+  <p class="eyebrow">第 6 课 · AI 链路排障</p>
+  <h1>SubAgent / Team runtime——多智能体不是放大单循环，而是另起 context</h1>
+  <p class="meta">阅读约 12 分钟 · 主源 <code>core/agent/execution/subagent/runner.py</code> / <code>core/agent/execution/team/runtime.py</code> · <a href="0005-workflow-dsl.html">← 上一课</a></p>
+</header>
+
+<p class="next-step" id="next-section"><span>下一节：第 7 课 · 事件流 / SSE wire（待续）</span></p>
+
+<p>上一课看了工作流图：<code>workflow_dsl.py</code> 只负责定义图和校验，真正执行依靠节点执行器。到了第 6 课，我们再往上一层看：<strong>多智能体不只是“在同一个 AgentLoop 里多跑几轮”，而是另起一个子上下文 / 一个 team runtime</strong>。这也是「同样的工具，为什么一条链路里总能串到子代理，父级却没收到想要的结果」的关键位置。</p>
+
+<h2>先给结论：SubAgent 与 Team 的核心区别</h2>
+
+<div class="concept">
+  <p class="tag">一句话概括</p>
+  <p><strong>SubAgent</strong>：单个子代理，独立 <code>ExecutionContext</code>，继承/过滤父级工具，拿到自己的结果再回到父级；<strong>Team</strong>：多个已存在的 AgentInstance 成员以团队模式并发或协作执行，协调器做 wave / task / summary。</p>
+</div>
+
+<p>你不能把它们当成“只多了一层抽象”。在这套代码里，它们分别对应不同的运行器：<code>SubagentRunner</code> 和 <code>TeamRuntime</code>。前者解决的是“一个父级任务拆成一个子任务”，后者解决的是“一个任务拆成多个成员协作”。</p>
+
+<h2>SubAgent：另起一个独立执行上下文</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/core/agent/execution/subagent/runner.py</span> · <code>SubagentRunner._create_child_context</code> 与 <code>run</code></div>
+
+<pre><code>SubagentRunner.run(agent_type, prompt, parent_context)
+  ├─ definition = self._resolve_definition(agent_type)
+  ├─ child_context = self._create_child_context(definition, prompt, parent_context)
+  │   ├─ tools = 继承父级工具 / 过滤 agent 工具 / 按 definition.tools 白名单
+  │   ├─ child_agent_id = f"{parent.agent_id}::{definition.name}"
+  │   ├─ extra = replace(parent.extra, usage_tracker=None)
+  │   └─ model_name / system_prompt / usage_tracker / broadcaster_agent_id：全另起一套
+  ├─ loop = AgentLoop(config=LoopConfig(...))
+  └─ async for event in loop.run() ...</code></pre>
+
+<p>这里的核心不是“把同一个上下文拿来复用”，而是<strong>复制一份新的执行上下文</strong>。代码里最关键的几个点：</p>
+
+<ul>
+  <li><code>definition.tools is None</code>：继承父级工具列表，但自动排除 <code>agent</code> 工具，防止递归派生子代理；</li>
+  <li><code>definition.tools == []</code>：纯文本推理，没有工具；</li>
+  <li><code>parent.agent_id</code> 会变成 <code>f"{parent.agent_id}::{definition.name}"</code>，这样前端/日志能区分父子；</li>
+  <li>新建 <code>usage_tracker</code>，并且 <code>extra = replace(parent.extra, usage_tracker=None)</code>，避免把父级的计费状态串过去；</li>
+  <li><code>broadcaster_agent_id=child_agent_id</code>，让流式事件带有子代理身份标识。</li>
+</ul>
+
+<p>这里的“问题入口”通常不是模型本身，而是<strong>上下文隔离不彻底</strong>：工具继承错误、agent_id 串了、子代理事件没有带 <code>subagent_id</code>、父级拿不到最终结果。一次子代理跑起来，很大概率是因为 <code>parent_context</code> 的共享状态被错误继承了，或者白名单过滤把本该用的工具剥掉了。</p>
+
+<div class="debug-tip">如果你看到「子代理能生成内容，但父级工具结果不对」「一个 agent 的输出被混入另一个 agent 的事件流」，优先看 <code>SubagentRunner._create_child_context()</code>、<code>child_agent_id</code>、以及 `extra_data.subagent_id / parent_tool_use_id`。</div>
+
+<h2>子代理的消息和事件：不是直接写回父级，而是挂在 tool result 上</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/core/agent/execution/subagent/runner.py</span> · <code>run()</code> 中的消息持久化与 ContentHandler</div>
+
+<p>在 <code>SubagentRunner.run()</code> 里，代码会为子代理创建 <code>user</code> 和 <code>assistant</code> 占位消息，并写上：</p>
+
+<ul>
+  <li><code>subagent_id</code></li>
+  <li><code>parent_tool_use_id</code></li>
+</ul>
+
+<p>注意这里的设计非常有代表性：<strong>子代理并不是把逐步思考直接塞回父级消息流，而是让父级最后只接收最终文本作为 tool_result</strong>。也就是说，子代理的完整过程可以被前端查看，但父节点只拿到一个结果摘要，而不是一整段嵌套事件流。这个设计非常接近“工具调用”语义。</p>
+
+<pre><code># 伪代码：父级只接收最终文本，完整过程保留在子代理消息/事件里
+final_text = subagent_result.content
+tool_result = {"type": "subagent", "content": final_text, ...}</code></pre>
+
+<p>这会导致两个很典型的问题：</p>
+
+<ol>
+  <li>前端看见子代理卡片，但父级回调没有正确映射；</li>
+  <li>消息持久化里，<code>subagent_id</code> / <code>parent_tool_use_id</code> 丢了，日志看起来像“同级消息”混在一起。</li>
+</ol>
+
+<h2>Team runtime：多个 AgentInstance 作为成员协作，不是子代理的简单复用</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/core/agent/execution/team/runtime.py</span> / <span class="path">core/agent/execution/team/coordinator.py</span></div>
+
+<p><code>TeamRuntime</code> 不是某个子代理的包装，而是一个“团队执行器”。它从 <code>config</code> 里解析 <code>multi_agent.workers</code>，拿出成员列表，并把他们转成 <code>TeamMemberSpec</code> / <code>TeamMemberRef</code>。关键逻辑在 <code>extract_team_member_specs()</code> 和 <code>extract_team_max_concurrent_workers()</code> 中。</p>
+
+<pre><code>multi_agent = _extract_multi_agent_config(config)
+workers = multi_agent.get("workers") or []
+for raw_worker in workers:
+    agent_id = _worker_agent_id(worker)
+    alias = worker.get("alias") or worker.get("name") or agent_id
+    specs.append(TeamMemberSpec(alias=alias, agent_id=agent_id))</code></pre>
+
+<p>这表示：<strong>Team runtime 不是用新建子代理的方式串起成员，而是使用已有的 AgentInstance 作为成员</strong>。因此团队模式最容易出错的地方不是“模型配置”，而是：</p>
+
+<ul>
+  <li>成员配置没解析出来；</li>
+  <li>同名 alias duplicated；</li>
+  <li>成员没有真正拿到 <code>agent_id</code>；</li>
+  <li>并发 worker 数/任务分配策略和 team runtime 的 wave 逻辑不匹配。</li>
+</ul>
+
+<p>在这个层面，排障时你要把焦点转到<strong>成员解析 + 分配 + 协调</strong>，而不是单个 AgentLoop。也就是说，Team 问题往往不是“单轮 LLM 输出错了”，而是“队列怎么排、成员怎么分配、哪个成员被错误复用、哪个 wave 的事件走丢了”。</p>
+
+<h2>SubAgent 和 Team 的共同故障面：成员/上下文/事件没有“同一套身份”</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/core/agent/execution/__init__.py</span> 与 <span class="path">core/agent/execution/team/runtime.py</span></div>
+
+<p>如果你把 SubAgent 和 Team 放在一起看，最典型的共性是：<strong>它们都需要明确的身份和上下文边界</strong>。没有统一约定，几乎所有异步多智能体排障都退化成“哪边消息看起来串了、谁负责最终输出、哪个 agent_id 参与了计算”。</p>
+
+<p>代码里已经体现了这一点：</p>
+
+<ul>
+  <li>SubAgent: <code>agent_id</code> 改成 <code>parent_agent_id::subagent_name</code></li>
+  <li>Team: 通过 <code>alias</code> / <code>agent_id</code> / <code>TeamMemberRef</code> 标识成员</li>
+  <li>事件总线带 <code>broadcaster_agent_id</code> / <code>subagent_id</code> / <code>parent_tool_use_id</code></li>
+</ul>
+
+<p>换句话说，<strong>多智能体的“对错”不在于是否能新开一个线程，而在于各个成员的上下文、身份、事件和最终总结是否一一对应</strong>。这是很多“看起来像模型不行”的问题的真实根因。</p>
+
+<h2>排障归因表（增量）</h2>
+
+<table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">症状</th>
+  <th style="padding:0.4rem;">最可能落点</th>
+  <th style="padding:0.4rem;">确认方式</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">子代理结果看起来“父级没有拿到”</td>
+  <td style="padding:0.4rem;"><code>SubagentRunner._create_child_context</code> / <code>parent_tool_use_id</code></td>
+  <td style="padding:0.4rem;">看是否在创建消息和事件时写入了子代理 identity；是否丢了 tool result 回传</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">同一个父任务里出现“多个 agent 混写”</td>
+  <td style="padding:0.4rem;"><code>broadcaster_agent_id</code> / 子代理 agent_id / message metadata</td>
+  <td style="padding:0.4rem;">检查事件总线是否按 <code>agent_id</code> 区分流；是否有共享 usage_tracker 或 extra_data</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">team 成员不显示，或成员列表为空</td>
+  <td style="padding:0.4rem;"><code>extract_team_member_specs()</code> / <code>multi_agent.workers</code></td>
+  <td style="padding:0.4rem;">看 config 是否真的带 <code>enabled</code>、<code>workers</code>、<code>agent_id</code>，alias 是否重复</td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;">工具被“错误继承”或者子代理拿不到工具</td>
+  <td style="padding:0.4rem;"><code>definition.tools is None</code> / 白名单过滤逻辑</td>
+  <td style="padding:0.4rem;">确认当前工具列表是继承、空列表，还是显式 allowlist；看是否过滤了 <code>agent</code> 工具</td>
+</tr>
+</tbody>
+</table>
+
+<h2>检索检验</h2>
+
+<div class="quiz">
+  <p class="q-label">排障检验</p>
+  <p class="question">你看到一个子代理事件能流出，但父级在最终结果里看不到它的输出，且日志里 agent_id 也异常。最先应查哪一处？</p>
+  <ul class="options">
+    <li>HTTP route 层，看聊天接口是不是没有处理流</li>
+    <li data-correct="1"><code>SubagentRunner._create_child_context()</code> 和 <code>run()</code> 里的 identity / metadata / tool result 回传</li>
+    <li>RAG 检索服务，看知识库是不是返回空</li>
+    <li>单轮 AgentLoop 的 <code>while True</code>，看是否无工具调用</li>
+  </ul>
+  <p class="feedback">这个症状的本质往往不是“LLM 没输出”，而是“子代理上下文和父级事件流没有对齐”。多智能体排障最先要查的是 identity、上下文隔离、以及父级对子代理结果的回传，而不是前端或 RAG 的表层问题。</p>
+</div>
+
+<h2>推荐主源</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/core/agent/execution/subagent/runner.py</span> · <code>SubagentRunner._create_child_context</code> / <code>run</code></div>
+<div class="file-ref"><span class="path">zeno-backend-agent/core/agent/execution/team/runtime.py</span> · <code>extract_team_member_specs</code> / <code>TeamRuntime</code></div>
+
+<p>如果你要做“多智能体排障”，最值得按这个顺序去追：先看子代理是否另起了 child context，再看它有没有写好 subagent_id / parent_tool_use_id；然后再看 team runtime 有没有成功从 config 中解析出成员与 worker 配置。这样你就不会把多智能体问题误判成单循环或大模型问题。</p>
+
+<footer class="lesson-foot">
+  <p>下一阶段：第 7 课 · 事件流 / SSE wire（继续补全）</p>
+  <p>如果你愿意，我下一步可以直接继续写第 7 课，并把骨架串成真正可阅读的学习链。</p>
+</footer>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

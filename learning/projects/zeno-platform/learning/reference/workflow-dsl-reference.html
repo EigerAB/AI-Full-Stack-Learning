@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workflow DSL 速查</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="lesson-head">
+    <p class="eyebrow">Reference</p>
+    <h1>Workflow DSL 速查</h1>
+    <p class="meta">ZenFlux Agent · 读代码优先</p>
+  </header>
+
+  <h2>一张图的最小结构</h2>
+  <pre><code>{
+  "version": "1.0",
+  "meta": {"skeleton": "default_v1"},
+  "nodes": [
+    {"id": "begin_1", "type": "Begin", "data": {"mode": "conversational"}},
+    {"id": "agent_1", "type": "Agent", "data": {"llm_id": null, "max_rounds": 5}}
+  ],
+  "edges": [
+    {"source": "begin_1", "target": "agent_1"}
+  ]
+}</code></pre>
+
+  <h2>常见节点类型</h2>
+  <ul>
+    <li><strong>Begin</strong>：入口，启动工作流</li>
+    <li><strong>Agent</strong>：跑 LLM / 执行提示词</li>
+    <li><strong>Reply</strong>：输出最终回复</li>
+    <li><strong>Switch</strong>：分支判断</li>
+    <li><strong>Categorize</strong>：分类</li>
+    <li><strong>ToolCall</strong>：调用工具</li>
+    <li><strong>Loop</strong>：循环容器</li>
+    <li><strong>LoopBreak / LoopContinue</strong>：循环控制</li>
+    <li><strong>SubWorkflow</strong>：嵌套子工作流</li>
+    <li><strong>Question</strong>：挂起式提问</li>
+  </ul>
+
+  <h2>最关键的入口</h2>
+  <ul>
+    <li><code>core/agent/workflow_dsl.py</code>：DSL 定义、校验、默认骨架</li>
+    <li><code>core/agent/workflow_node_registry.py</code>：节点注册表</li>
+    <li><code>core/agent/workflow_node_executors.py</code>：每种节点的执行闭包</li>
+    <li><code>core/agent/agent_workflow_debug.py</code>：真正调试/运行节点逻辑</li>
+  </ul>
+
+  <h2>排障口诀</h2>
+  <ol>
+    <li>先验证图合法：<code>validate_workflow_dsl()</code></li>
+    <li>再看节点类型：有没有 <code>Agent</code> / <code>Switch</code> / <code>Loop</code></li>
+    <li>再看边和变量：节点输出是否写回变量池</li>
+    <li>最后看节点实现：执行器是不是返回了正确的结果</li>
+  </ol>
+
+  <footer class="lesson-foot">
+    <p><a href="../lessons/0005-workflow-dsl.html">返回第 5 课</a></p>
+  </footer>
+</div>
+</body>
+</html>

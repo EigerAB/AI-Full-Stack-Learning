@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 5 课 · Workflow DSL + 节点执行器</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="lesson-head">
+  <p class="eyebrow">第 5 课 · AI 链路排障</p>
+  <h1>Workflow DSL + 节点执行器——工作流怎么被画出来、跑起来</h1>
+  <p class="meta">阅读约 12 分钟 · 主源 <code>core/agent/workflow_dsl.py</code> · <a href="0004-tool-execution-layer.html">← 上一课</a></p>
+</header>
+
+<p class="next-step" id="next-section"><a href="0006-subagent-team-runtime.html">下一节：第 6 课 · SubAgent / Team runtime →</a></p>
+
+<p>上一课看了工具执行层：AgentLoop 怎么拿到 <code>ToolExecutionResult</code>，并把它再喂回模型。下一步我们往上走一层，看看更大的“画布式工作流”是怎么定义的——<strong>DSL</strong> 描述了哪些节点、哪些边、哪些变量；<strong>节点执行器</strong> 决定每种节点如何真正执行。这个层面是你遇到「节点没跑」「分支不走」「变量没写回」等故障时，最容易看错的地方。</p>
+
+<h2>先给结论：工作流不是“脚本”，而是“节点图”</h2>
+
+<div class="file-ref">主源：<span class="path">zeno-backend-agent/core/agent/workflow_dsl.py</span> · <code>build_default_workflow_dsl</code> 第 105 行</div>
+
+<pre><code>{
+  "version": "1.0",
+  "meta": {"skeleton": "default_v1"},
+  "nodes": [
+    {"id": "begin_1", "type": "Begin", "data": {"mode": "conversational"}},
+    {"id": "agent_1", "type": "Agent", "data": {...}},
+    {"id": "reply_1", "type": "Reply", "data": {...}}
+  ],
+  "edges": [
+    {"source": "begin_1", "target": "agent_1"},
+    {"source": "agent_1", "target": "reply_1", "sourceHandle": "start"}
+  ]
+}</code></pre>
+
+<p>这段是默认骨架：<strong>Begin → Agent → Reply</strong>。一张工作流图的核心不是代码分支，而是：<code>nodes</code> 里每一个节点是谁，<code>edges</code> 里哪条边连到哪条边，节点的 <code>data</code> 里放变量、提示词、模型参数、输出格式。真正跑起来时，调度器按图遍历，节点执行器按 <code>type</code> 做不同动作。</p>
+
+<div class="concept">
+  <p class="tag">一句话概括</p>
+  <p>DSL 决定“图长什么样”，节点执行器决定“每个节点怎么跑”，调度器决定“按边从哪到哪”。排障时，先看图结构，再看节点实现，最后看变量和值是否落回图里。</p>
+</div>
+
+<h2>DSL 里最重要的两件事：节点类型 + 图结构校验</h2>
+
+<div class="file-ref"><span class="path">core/agent/workflow_dsl.py</span> · <code>ALLOWED_NODE_TYPES</code> 第 90 行，<code>validate_workflow_dsl</code> 第 193 行</div>
+
+<pre><code>ALLOWED_NODE_TYPES = frozenset(NODE_REGISTRY)
+
+# 例：Begin / Agent / Reply / End / KnowledgeRetrieval / ... / Loop / LoopBreak</code></pre>
+
+<p>这不是“随便一堆 key”。它来自 <code>core/agent/workflow_node_registry.py</code> 的 <code>NODE_REGISTRY</code>。也就是说，合法节点种类是<strong>注册表驱动</strong>的，新增节点类型必须同步注册、同步校验器。</p>
+
+<p><code>validate_workflow_dsl()</code> 做的事是：检查：</p>
+
+<ul>
+  <li><code>version</code> 是否为 <code>"1.0"</code></li>
+  <li><code>nodes</code> 是不是非空 list</li>
+  <li><code>edges</code> 是不是 list</li>
+  <li>每个节点的 <code>id</code> 是否填了、是否重复</li>
+  <li><code>type</code> 是否在允许集合里</li>
+  <li>节点自己的 <code>data</code> 是否符合某个节点类型的字段要求</li>
+  <li>循环节点/问答节点/子工作流节点之类的图约束是否满足</li>
+</ul>
+
+<p>这里的关键是：<strong>校验器不是只做最表层检查</strong>。它会调用 <code>validate_extended_node_data(node_type, data, display, dsl=dsl)</code> 这类函数，按节点类型细分验证字段，像 Agent 节点的 <code>llm_id</code>、<code>max_rounds</code>、<code>exception_method</code>，或者循环节点的 <code>loop_type</code>。如果节点类型不合法，你在画布或者调试时，最早就会被拦住。</p>
+
+<div class="debug-tip">「为什么某个节点能画出来，但运行时报错」——大概率是图结构合法，但该节点的 <code>data</code> 字段不满足具体节点校验；或者它在循环体内被放了不该放的类型。先看 <code>validate_workflow_dsl</code>，别一上来就看执行器。</div>
+
+<h2>节点类型：不是“一个 AI 节点”，而是一类执行器</h2>
+
+<div class="file-ref"><span class="path">core/agent/workflow_node_registry.py</span> · <code>NODE_REGISTRY</code> 与 <code>NodeSpec</code></div>
+
+<p>真正的工作流引擎里，每个节点类型都被包装成 <code>NodeSpec</code>，其中包括：</p>
+
+<ul>
+  <li><code>type</code>：节点类别</li>
+  <li><code>title</code>：在画布里显示的名字</li>
+  <li><code>execute</code>：真正运行时调用的函数</li>
+  <li><code>validate</code>：字段级校验器</li>
+  <li>一些节点特有的约束，比如 <code>forbidden_in_loop</code></li>
+</ul>
+
+<p><code>workflow_node_executors.py</code> 把 29 个节点的真正执行闭包放在这里，名字形如 <code>_exec_begin</code>、<code>_exec_switch</code>、<code>_exec_tool_call</code>、<code>_exec_loop</code>、<code>_exec_agent</code>。这些函数不是“随便实现”，而是对既有 <code>agent_workflow_debug.py</code> 中 debug 执行器的转发。</p>
+
+<pre><code>async def _exec_begin(ctx: NodeExecContext) -> NodeExecResult:
+    from core.agent.agent_workflow_debug import _debug_begin
+    return _debug_begin(...)
+
+async def _exec_agent(ctx: NodeExecContext) -> NodeExecResult:
+    from core.agent.agent_workflow_debug import _debug_agent
+    return await _debug_agent(...)
+</code></pre>
+
+<p>这层设计很重要：<strong>注册表把节点维度统一起来，调试器和正式执行器都复用同一套节点实现</strong>。如果你在调试某个节点时，能看到它在 <code>workflow_node_executors.py</code> 里被转发到某个 <code>_debug_*</code> 函数，就能直接追到真正行为。</p>
+
+<h2>执行是图遍历，不是“顺序代码”</h2>
+
+<div class="file-ref"><span class="path">core/agent/agent_workflow_debug.py</span> / <span class="path">core/agent/agent_workflow_graph_runner.py</span></div>
+
+<p>工作流图运行时通常是这样：</p>
+
+<ol>
+  <li>固定起点节点（如 <code>Begin</code>）</li>
+  <li>按 <code>edges</code> 找下一个节点</li>
+  <li>执行该节点的 <code>execute</code> 函数，拿回输出变量</li>
+  <li>把输出写回变量池（<code>variables</code>）</li>
+  <li>继续走出边，直到 <code>End</code> 或分支结束</li>
+</ol>
+
+<p>也就是说，一个工作流不是“if-else 语句堆”，而是“图 + 变量池 + 节点执行器”。最容易出错的是：<strong>边没连上、分支没命中、节点返回值没写回变量、循环控制节点放错了位置</strong>。这些都不是 LLM 的问题，而是图结构和节点语义的问题。</p>
+
+<h2>循环节点和循环控制节点：最容易搞错的一类边界</h2>
+
+<div class="file-ref"><span class="path">core/agent/workflow_dsl.py</span> · <code>LOOP_CONTROL_NODE_TYPES</code> / <code>LOOP_FORBIDDEN_BODY_TYPES</code></div>
+
+<pre><code>LOOP_CONTROL_NODE_TYPES = frozenset({"LoopStart", "LoopEnd", "LoopBreak", "LoopContinue"})
+LOOP_FORBIDDEN_BODY_TYPES = frozenset(
+    node_type for node_type, spec in NODE_REGISTRY.items() if spec.forbidden_in_loop
+)</code></pre>
+
+<p>这块的意思是：循环体里不能塞某些“非法”节点类型。比如：</p>
+
+<ul>
+  <li><code>LoopBreak</code> / <code>LoopContinue</code> 只能在循环体内</li>
+  <li>某些节点，像终端节点、暂停节点、嵌套循环，不能被直接放进循环体</li>
+</ul>
+
+<p>这不是微观实现细节，而是“图合法性”的一部分。<strong>很多流程图看起来能跑，实际上分支或循环出边不对，或者循环体里混进了非循环允许节点</strong>，会导致图一次运行就停掉，或者变量只在循环内部维护，最终没有返回。</p>
+
+<h2>Agent 节点：工作流里最核心的那个节点</h2>
+
+<div class="file-ref"><span class="path">core/agent/workflow_dsl.py</span> · <code>validate_agent_node_data</code>、<code>build_default_workflow_dsl</code></div>
+
+<p>默认骨架里，最关键的是 <code>Agent</code> 节点。它的数据里会有：</p>
+
+<ul>
+  <li><code>sys_prompt</code></li>
+  <li><code>llm_id</code></li>
+  <li><code>prompts</code></li>
+  <li><code>message_history_window_size</code></li>
+  <li><code>max_rounds</code></li>
+  <li><code>exception_method</code></li>
+  <li>采样参数：<code>temperature</code>、<code>top_p</code> 等</li>
+</ul>
+
+<p>这里是图真正“启用大模型”之处。它不像单轮 AgentLoop 那样一刀切，而是把模型能力、回合限制、系统提示和异常处理配置都放进这个节点。<strong>工作流故障经常不是大模型本身失败，而是 Agent 节点的配置不对：prompt 空、llm_id 缺、max_rounds 太低、exception_method 走错出口。</strong></p>
+
+<h2>排障归因表（增量）</h2>
+
+<table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid var(--rule); text-align:left;">
+  <th style="padding:0.4rem;">症状</th>
+  <th style="padding:0.4rem;">最可能落点</th>
+  <th style="padding:0.4rem;">确认方式</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">节点能画，但运行时报错</td>
+  <td style="padding:0.4rem;"><code>validate_workflow_dsl()</code> / 某节点的 <code>data</code> 校验</td>
+  <td style="padding:0.4rem;">看该节点的字段是不是缺、是不是类型不对、是不是循环体非法</td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">图走不动，没下一步</td>
+  <td style="padding:0.4rem;">边没连、source/target 不合法、流向不匹配</td>
+  <td style="padding:0.4rem;">看 <code>edges</code> 和起终点是否形成通路；检查 <code>Begin → ... → End</code></td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">循环里调试不了，变量丢了</td>
+  <td style="padding:0.4rem;">循环控制节点或禁止节点类型混进了循环体</td>
+  <td style="padding:0.4rem;">对照 <code>LOOP_CONTROL_NODE_TYPES</code> 与 <code>LOOP_FORBIDDEN_BODY_TYPES</code></td>
+</tr>
+<tr style="border-bottom:1px solid var(--rule);">
+  <td style="padding:0.4rem;">大模型节点不调模型</td>
+  <td style="padding:0.4rem;"><code>Agent</code> 节点的配置字段错误</td>
+  <td style="padding:0.4rem;">查 <code>llm_id</code>、<code>sys_prompt</code>、<code>prompts</code>、<code>max_rounds</code></td>
+</tr>
+<tr>
+  <td style="padding:0.4rem;">变量出现“设置了但没用上”</td>
+  <td style="padding:0.4rem;">节点输出没写回变量池，或下游引用写法不对</td>
+  <td style="padding:0.4rem;">看节点执行器返回值、输出键名，以及上游引用变量名是否一致</td>
+</tr>
+</tbody>
+</table>
+
+<h2>检索检验</h2>
+
+<div class="quiz">
+  <p class="q-label">排障检验</p>
+  <p class="question">一个工作流里，<code>Agent</code> 节点配置正确，但它的下游连接不是 <code>Reply</code>、而是一个合法但没被正确命中的分支。结果是图跑到一半停住，日志里看不到明确异常。更像是哪个层面的故障？</p>
+  <ul class="options">
+    <li>工具层 failed，查 <code>core/tool/executor.py</code> 的 is_error 判定</li>
+    <li data-correct="1">图结构 / 节点执行流层，查 <code>workflow_dsl.py</code> 和 <code>edges</code> / 节点路由</li>
+    <li>大模型 provider 层，查 <code>core/llm</code> 里模型连接</li>
+    <li>前端 HTTP 层，查 SSE 是不是断了</li>
+  </ul>
+  <p class="feedback">这类“看起来没报错但流程停住”的问题，最像是工作流图结构问题：节点配置可能是对的，但图的边、分支、循环体、输出变量没走成，导致程序在图遍历阶段卡住。真正要查的，是 <code>workflow_dsl.py</code> 的校验和图连接、以及节点执行器的 return / variables 更新，而不是工具层。本课的关键就是：先读图，再看节点。</p>
+</div>
+
+<h2>推荐主源</h2>
+
+<div class="file-ref"><span class="path">zeno-backend-agent/core/agent/workflow_dsl.py</span> · <code>build_default_workflow_dsl</code> / <code>validate_workflow_dsl</code> / <code>LOOP_FORBIDDEN_BODY_TYPES</code></div>
+
+<p>重点读：前 100 行默认骨架，193 行校验入口，90 行的 <code>ALLOWED_NODE_TYPES</code>，以及后续的 <code>validate_agent_node_data</code> 和循环约束。然后对照 <span class="path">zeno-backend-agent/core/agent/workflow_node_executors.py</span> 里每种节点的 <code>_exec_*</code>，看“图结构”如何落到“具体节点执行”。这两个文件就是你排障工作流问题时最重要的导航图。</p>
+
+<footer class="lesson-foot">
+  <p>下一课：<a href="0006-subagent-team-runtime.html">第 6 课 · SubAgent / Team runtime</a></p>
+  <p>如果你愿意，我下一步可以继续把第 6 课也按同样风格写成 HTML，并且把这一节的学习记录落到工作区中。</p>
+</footer>
+
+</div>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

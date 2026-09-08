@@ -15,6 +15,8 @@
   <p class="meta">阅读约 12 分钟 · 主源 <code>core/tool/executor.py</code> · <a href="0003-agent-loop.html">← 上一课</a></p>
 </header>
 
+<p class="next-step" id="next-section"><a href="0005-workflow-dsl.html">下一节：第 5 课 · Workflow DSL + 节点执行器 →</a></p>
+
 <p>上一课的 AgentLoop 第 ④ 阶段调 <code>_execute_tools</code> → <code>tool_executor.execute_tools</code>，拿到一个 <code>dict[str, ToolExecutionResult]</code>。这一课我们钻进 <code>core/tool/</code>，看这个 dict 是怎么来的——工具怎么被找到、怎么被校验、怎么并行跑、<code>is_error</code> 是谁判的。这是「工具没调」「工具报错」「工具被拦」类故障的落点。</p>
 
 <h2>调用链：从 AgentLoop 到 provider.invoke</h2>

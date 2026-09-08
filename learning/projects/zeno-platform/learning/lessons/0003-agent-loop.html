@@ -15,6 +15,8 @@
   <p class="meta">阅读约 12 分钟 · 主源 <code>core/agent/execution/loop.py</code> · <a href="0002-chat-service-flow.html">← 上一课</a></p>
 </header>
 
+<p class="next-step" id="next-section"><a href="0004-tool-execution-layer.html">下一节：第 4 课 · 工具执行层 →</a></p>
+
 <p>上一课的终点是 <code>_run_agent_scoped</code> 阶段 2.3：<code>Agent.chat</code>。这一课我们钻进去，看一轮对话真正「跑」起来的地方——<strong>AgentLoop</strong>。它是所有执行模式（单循环 / Subagent / Team / Plan）共享的唯一引擎，也是「回复内容不对」「工具没调」「跑着跑着空了」这类故障的最终落点。</p>
 
 <div class="concept">

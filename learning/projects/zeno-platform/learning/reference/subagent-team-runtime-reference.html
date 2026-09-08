@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SubAgent / Team runtime 快速参考</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="lesson-head">
+    <p class="eyebrow">参考卡</p>
+    <h1>SubAgent / Team runtime</h1>
+  </header>
+
+  <h2>一张图：问题从哪儿来</h2>
+  <pre><code>父级 AgentLoop
+  └─ subagent/tool call
+      └─ SubagentRunner.run()
+          ├─ _create_child_context()
+          │   ├─ 复制 ExecutionContext
+          │   ├─ 过滤工具白名单 / 去掉 agent 工具
+          │   └─ 生成 child_agent_id
+          ├─ AgentLoop(child_context)
+          └─ 回传最终文本作为工具结果</code></pre>
+
+  <h2>最关键的文件</h2>
+  <ul>
+    <li><code>core/agent/execution/subagent/runner.py</code>：子代理运行器</li>
+    <li><code>core/agent/execution/subagent/definition.py</code>：AgentDefinition</li>
+    <li><code>core/agent/execution/subagent/registry.py</code>：注册中心</li>
+    <li><code>core/agent/execution/team/runtime.py</code>：team 入口</li>
+    <li><code>core/agent/execution/team/coordinator.py</code>：协调器</li>
+  </ul>
+
+  <h2>排障入口</h2>
+  <ul>
+    <li>子代理工具结果不回传：看 <code>parent_tool_use_id</code>、<code>subagent_id</code>。</li>
+    <li>子代理工具被错误继承：看 <code>definition.tools is None</code> 与白名单过滤逻辑。</li>
+    <li>同一批事件被混进同一条流：看 <code>broadcaster_agent_id</code>。</li>
+    <li>team 成员不生效：看 <code>workers</code> 配置、<code>agent_id</code>、alias 去重。</li>
+  </ul>
+
+  <h2>一句话结论</h2>
+  <p>多智能体的核心不是“多轮模型”，而是“多套上下文 + 多套身份 + 多套事件归属”。只要 identity 和 context 边界没搞清，排障就会被表象迷住。</p>
+</div>
+</body>
+</html>
