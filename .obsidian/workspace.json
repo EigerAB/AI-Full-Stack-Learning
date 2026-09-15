@@ -8,35 +8,34 @@
         "type": "tabs",
         "children": [
           {
-            "id": "1c8fdb3fe34b006e",
+            "id": "dc2b1982e3fa3397",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/projects/zeno-platform/protocols/CHAT-TWO-PHASE.md",
-                "mode": "preview",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "CHAT-TWO-PHASE"
-            }
-          },
-          {
-            "id": "335ff1b36c51de54",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "daily/2026/09.md",
+                "file": "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "09"
+              "title": "02-面向后端开发的JavaSE补强"
+            }
+          },
+          {
+            "id": "7fa158c3c0008e11",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/READEME.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "READEME"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "vertical"
@@ -176,7 +175,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "daily/2026/09.md",
+                "file": "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -203,49 +202,51 @@
       "bases:新建数据库": false
     }
   },
-  "active": "e02ca5b64d5e98c2",
+  "active": "dc2b1982e3fa3397",
   "lastOpenFiles": [
-    "learning/Agent/Agent框架优先型学习路线.md",
-    "learning/Agent/framework-landscape-research.md",
+    "learning/backend/Java/芋道项目学习地图.md",
+    "learning/backend/Java/examples/03-spring-core/target/spring-core-lesson-1.0.0.jar.original",
+    "learning/backend/Java/examples/03-spring-core/target/spring-core-lesson-1.0.0.jar",
+    "learning/backend/Java/examples/03-spring-core/target/maven-archiver/pom.properties",
+    "learning/backend/Java/examples/03-spring-core/target/maven-archiver",
+    "learning/backend/Java/examples/03-spring-core/target/maven-status/maven-compiler-plugin/compile/default-compile/createdFiles.lst",
+    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/TraceAspect.class",
+    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/ProductService.class",
+    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/ProductRepository.class",
+    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/CoreApplication.class",
+    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore",
+    "learning/backend/Java/03-Spring核心思想.md",
+    "learning/backend/Java/开源练手项目推荐.md",
+    "learning/backend/Java/实操01-VSCode运行与调试Java.md",
+    "learning/backend/Java/01-Java后端工程入门.md",
+    "learning/backend/Java/READEME.md",
+    "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
+    "learning/stars/skill.md",
+    "learning/AICli/统计token.md",
+    "daily/2026/09.md",
+    "learning/todo/test.md",
+    "learning/todo/202608.md",
+    "images/token-usage.png",
+    "Pasted image 20260914104322.png",
+    "learning/Agent/架构优先型/CONTEXT.md",
+    "learning/Agent/架构优先型/lessons/0001-agent-engineering-foundations.md",
+    "learning/Agent/架构优先型/README.md",
+    "learning/Agent/理论优先型/README.md",
     "learning/Agent/Agent架构与平台开发学习路线.md",
+    "learning/Agent/Agent理论优先型学习路线.md",
+    "learning/projects/zeno-platform/protocols/CHAT-TWO-PHASE.md",
+    "learning/Agent/Agent框架优先型学习路线.md",
+    "images/docker-architecture.webp",
+    "learning/Agent/framework-landscape-research.md",
     "learning/Agent/README.md",
     "daily/未命名.md",
-    "daily/2026/09.md",
-    "daily/2026",
     "learning/Architecture/MiddlePlatform/READEME.md",
-    "daily",
-    "learning/Agent",
     "learning/projects/zeno-platform/learning/RESOURCES.md",
     "learning/projects/zeno-platform/learning/NOTES.md",
-    "learning/projects/zeno-platform/learning/MISSION.md",
-    "learning/projects/zeno-platform/learning/reference/workflow-dsl-reference.html",
-    "learning/projects/zeno-platform/learning/reference/subagent-team-runtime-reference.html",
-    "learning/projects/zeno-platform/learning/reference",
-    "learning/projects/zeno-platform/learning/lessons/0006-subagent-team-runtime.html",
-    "learning/projects/zeno-platform/learning/lessons/0005-workflow-dsl.html",
-    "learning/projects/zeno-platform/learning/lessons/0004-tool-execution-layer.html",
-    "learning/projects/zeno-platform/learning/lessons/0003-agent-loop.html",
-    "learning/projects/zeno-platform/learning/learning-records/0003-agent-loop.md",
-    "learning/projects/zeno-platform/learning/learning-records/0006-subagent-team-runtime.md",
-    "learning/projects/zeno-platform/learning/learning-records/0005-workflow-dsl.md",
-    "learning/projects/zeno-platform/learning/learning-records/0004-tool-execution-layer.md",
-    "learning/projects/zeno-platform/learning/learning-records/0002-chat-service-flow.md",
-    "learning/projects/zeno-platform/learning/learning-records/0001-two-phase-chat-protocol.md",
-    "learning/projects/zeno-platform/learning/RESOURCES copy.md",
-    "learning/projects/zeno-platform/learning/NOTES copy.md",
-    "learning/projects/zeno-platform/learning/MISSION copy.md",
-    "learning/projects/zeno-platform/learning/learning-records copy/0006-subagent-team-runtime.md",
-    "learning/projects/zeno-platform/learning/learning-records copy/0005-workflow-dsl.md",
-    "learning/projects/zeno-platform/learning/learning-records copy/0004-tool-execution-layer.md",
-    "learning/projects/zeno-platform/learning/learning-records copy/0003-agent-loop.md",
-    "learning/projects/zeno-platform/learning/learning-records copy/0002-chat-service-flow.md",
-    "learning/projects/zeno-platform/learning/learning-records copy/0001-two-phase-chat-protocol.md",
-    "learning/Architecture/others.md",
     "images/suqare-backend.png",
     "images/image.png",
     "images/docker-compose.png",
     "images/yaml-1.webp",
-    "yaml-1.webp",
-    "images/docker-architecture.webp"
+    "yaml-1.webp"
   ]
 }

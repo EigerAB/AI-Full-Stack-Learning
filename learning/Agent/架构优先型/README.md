@@ -20,6 +20,11 @@
 
 ## 00｜Agent 工程导论与学习基线
 
+### 课程材料
+
+- [第 1 课｜Agent、Workflow 与 Agent Platform 的系统边界](./lessons/0001-agent-engineering-foundations.md)
+- [Agent Runtime 学习领域词汇](./CONTEXT.md)
+
 ### 课程目录
 
 - 00.1 Agent、Chatbot、Workflow、Copilot 的区别
@@ -505,4 +510,3 @@
 - 为简单 Demo 引入 Kafka、Kubernetes 或复杂向量数据库；
 - 只会搭建低代码工作流但无法解释运行语义；
 - 只根据最终回答判断 Agent 是否正常。
-
