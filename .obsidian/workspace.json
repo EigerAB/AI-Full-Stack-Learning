@@ -8,7 +8,21 @@
         "type": "tabs",
         "children": [
           {
-            "id": "dc2b1982e3fa3397",
+            "id": "7fa158c3c0008e11",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/READEME.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "READEME"
+            }
+          },
+          {
+            "id": "acebd1fb14a40f33",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -22,20 +36,21 @@
             }
           },
           {
-            "id": "7fa158c3c0008e11",
+            "id": "4034ffc402836058",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/backend/Java/READEME.md",
-                "mode": "source",
+                "file": "learning/python/uv-workflow.md",
+                "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "READEME"
+              "title": "uv-workflow"
             }
           }
-        ]
+        ],
+        "currentTab": 2
       }
     ],
     "direction": "vertical"
@@ -97,7 +112,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 336
   },
   "right": {
     "id": "4686d8004e6c9c08",
@@ -175,7 +190,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
+                "file": "learning/python/uv-workflow.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -202,27 +217,38 @@
       "bases:新建数据库": false
     }
   },
-  "active": "dc2b1982e3fa3397",
+  "active": "4034ffc402836058",
   "lastOpenFiles": [
-    "learning/backend/Java/芋道项目学习地图.md",
-    "learning/backend/Java/examples/03-spring-core/target/spring-core-lesson-1.0.0.jar.original",
-    "learning/backend/Java/examples/03-spring-core/target/spring-core-lesson-1.0.0.jar",
-    "learning/backend/Java/examples/03-spring-core/target/maven-archiver/pom.properties",
-    "learning/backend/Java/examples/03-spring-core/target/maven-archiver",
-    "learning/backend/Java/examples/03-spring-core/target/maven-status/maven-compiler-plugin/compile/default-compile/createdFiles.lst",
-    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/TraceAspect.class",
-    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/ProductService.class",
-    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/ProductRepository.class",
-    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore/CoreApplication.class",
-    "learning/backend/Java/examples/03-spring-core/target/classes/demo/springcore",
-    "learning/backend/Java/03-Spring核心思想.md",
-    "learning/backend/Java/开源练手项目推荐.md",
-    "learning/backend/Java/实操01-VSCode运行与调试Java.md",
-    "learning/backend/Java/01-Java后端工程入门.md",
-    "learning/backend/Java/READEME.md",
+    "learning/markdown语法.md",
+    "learning/projects/smart-square/learning-records/0001-tech-stack-overview.md",
+    "learning/projects/smart-square/learning-records/0002-spring-boot-basics-in-admin.md",
+    "learning/backend/Java/extracurricular/课外02-Java项目文件结构.md",
+    "images/JAVA",
+    "images/JAVA/file-structrue.png",
     "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
-    "learning/stars/skill.md",
+    "images/suqare-backend.png",
+    "images/Java-file-complex.png",
+    "learning/backend/Java/extracurricular/未命名",
+    "learning/backend/Java/开源练手项目推荐.md",
+    "learning/backend/Java/03-Spring核心思想.md",
+    "learning/backend/Java/芋道项目学习地图.md",
+    "learning/backend/Java/实操01-VSCode运行与调试Java.md",
+    "learning/backend/Java/extracurricular/examples/extra01-annotation-reflection/AnnotationReflectionDemo.java",
+    "learning/backend/Java/extracurricular/examples/extra01-annotation-reflection",
+    "learning/backend/Java/extracurricular/examples",
+    "learning/backend/Java/extracurricular/知识碎片/202609.md",
+    "learning/backend/Java/extracurricular/知识碎片",
+    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
+    "learning/backend/Java/课外01-Java注解与反射.md",
+    "learning/backend/Java/extracurricular",
+    "learning/backend/Java/examples/extra01-annotation-reflection/AnnotationReflectionDemo.java",
+    "learning/backend/Java/examples/extra01-annotation-reflection",
+    "learning/backend/Java/知识碎片/202609.md",
+    "learning/backend/Java/知识碎片",
     "learning/AICli/统计token.md",
+    "learning/backend/Java/READEME.md",
+    "learning/backend/Java/01-Java后端工程入门.md",
+    "learning/stars/skill.md",
     "daily/2026/09.md",
     "learning/todo/test.md",
     "learning/todo/202608.md",
@@ -234,16 +260,7 @@
     "learning/Agent/理论优先型/README.md",
     "learning/Agent/Agent架构与平台开发学习路线.md",
     "learning/Agent/Agent理论优先型学习路线.md",
-    "learning/projects/zeno-platform/protocols/CHAT-TWO-PHASE.md",
-    "learning/Agent/Agent框架优先型学习路线.md",
     "images/docker-architecture.webp",
-    "learning/Agent/framework-landscape-research.md",
-    "learning/Agent/README.md",
-    "daily/未命名.md",
-    "learning/Architecture/MiddlePlatform/READEME.md",
-    "learning/projects/zeno-platform/learning/RESOURCES.md",
-    "learning/projects/zeno-platform/learning/NOTES.md",
-    "images/suqare-backend.png",
     "images/image.png",
     "images/docker-compose.png",
     "images/yaml-1.webp",

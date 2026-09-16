@@ -143,7 +143,7 @@ ArrayList 按索引读取通常是 O(1)，从中间删除元素可能需要移�
 
 ## 5. 泛型再补两点：包装类型和类型参数
 
-### 5.1 为什么是 List<Integer>，而不是 List<int>？
+### 5.1 为什么是 `List<Integer>`，而不是 `List<int>`？
 
 Java 有基本类型，例如 int、long、boolean；也有对应的包装类型 Integer、Long、Boolean。**泛型类型参数不能直接使用基本类型**，所以整数列表写 `List<Integer>`。
 
@@ -423,6 +423,8 @@ BufferedReader 提供按行读取等能力；`readLine()` 没有更多内容时�
 
 ## 13. 注解与反射：为什么框架能认识你的类？
 
+需要展开学习时，阅读 [课外 01：Java 注解与反射](课外01-Java注解与反射.md)，包含独立可运行示例、芋道源码案例与自查题。
+
 ### 13.1 注解为代码提供元信息
 
 `@Override`、`@Test`、后续的 `@RestController` 都是注解。**注解是附加在类、方法等位置的描述信息，由编译器、工具或框架读取。**它本身不是自动执行的业务代码。
@@ -566,7 +568,7 @@ java -cp . ProductPractice
 可以先回答，再向下查看答案。没有实时对话时，也能独立检查理解。
 
 1. 保存有序产品列表、标签去重、按编号查产品，各用哪种容器？
-2. 为什么 List<int> 不成立？Integer 为 null 时能直接赋给 int 吗？
+2. 为什么 `List<int>` 不成立？Integer 为 null 时能直接赋给 int 吗？
 3. 两个内容一样的 String，为什么 == 可能为 false？
 4. HashSet 中的自定义对象只重写 equals，不重写 hashCode，有什么问题？
 5. throw 和 throws 有什么区别？
@@ -581,7 +583,7 @@ java -cp . ProductPractice
 ### 参考答案
 
 1. List、Set、Map，分别对应按顺序保存、不重复元素、键值查找。
-2. 泛型参数不能直接使用基本类型；应写 List<Integer>。null 拆箱会抛出 NullPointerException。
+2. 泛型参数不能直接使用基本类型；应写 `List<Integer>`。null 拆箱会抛出 NullPointerException。
 3. 对象引用的 == 比较身份，String.equals 比较字符内容。两个对象可以内容相同。
 4. 可能违反“相等对象的哈希值必须相同”的约定，导致去重和查找不符合预期，需要配套实现。
 5. throw 实际抛出异常；throws 在方法签名中声明可能向外传播的异常。
