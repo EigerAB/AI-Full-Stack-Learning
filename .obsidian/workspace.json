@@ -4,49 +4,49 @@
     "type": "split",
     "children": [
       {
-        "id": "7d35ffc54d7ca2e2",
+        "id": "052dee6048442d30",
         "type": "tabs",
         "children": [
           {
-            "id": "7fa158c3c0008e11",
+            "id": "b465f82d461e9274",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/backend/Java/READEME.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "READEME"
-            }
-          },
-          {
-            "id": "acebd1fb14a40f33",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "02-面向后端开发的JavaSE补强"
-            }
-          },
-          {
-            "id": "4034ffc402836058",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "learning/python/uv-workflow.md",
+                "file": "learning/backend/Java/lessons/03-Spring核心思想.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "uv-workflow"
+              "title": "03-Spring核心思想"
+            }
+          },
+          {
+            "id": "f6783106d9a17fac",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/extracurricular/实操/实操01-VSCode运行与调试Java.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "实操01-VSCode运行与调试Java"
+            }
+          },
+          {
+            "id": "07ad5c097636ecbb",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "课外03-后端英文术语与概念词典"
             }
           }
         ],
@@ -190,7 +190,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "learning/python/uv-workflow.md",
+                "file": "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -217,53 +217,52 @@
       "bases:新建数据库": false
     }
   },
-  "active": "4034ffc402836058",
+  "active": "07ad5c097636ecbb",
   "lastOpenFiles": [
+    "learning/backend/Java/lessons/03-Spring核心思想.md",
+    "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
+    "learning/backend/Java/extracurricular/实操/实操01-VSCode运行与调试Java.md",
+    "learning/backend/Java/extracurricular/实操/实操02-VSCode创建Spring项目与运行XML示例.md",
+    "learning/backend/Java/extracurricular/课外02-Java项目文件结构.md",
+    "learning/backend/Java/extracurricular/知识碎片/202609.md",
+    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
+    "learning/backend/Java/extracurricular/一些收藏.md",
+    "learning/todo/202609.md",
+    "learning/todo/202608.md",
+    "images/JAVA/Spring Framework.png",
+    "learning/backend/Java/extracurricular/知识碎片/draft/2026-09.md",
+    "images/JAVA/Spring.md",
+    "learning/backend/Java/extracurricular/assets/spring-backend-overview-2026-09.png",
+    "learning/backend/Java/extracurricular/assets/spring-backend-overview-2026-09.prompt.md",
+    "learning/backend/Java/READEME.md",
+    "learning/backend/Java/extracurricular/assets",
+    "learning/backend/Java/lessons/01-Java后端工程入门.md",
+    "learning/backend/Java/lessons",
+    "learning/backend/Java/lessons/02-面向后端开发的JavaSE补强.md",
+    "learning/backend/Java/芋道项目学习地图.md",
+    "learning/backend/Java/开源练手项目推荐.md",
+    "learning/backend/Java/extracurricular/实操",
+    "learning/backend/Java/extracurricular/知识碎片/draft",
+    "learning/python/uv-workflow.md",
+    "images/JAVA/API Progress.png",
+    "learning/backend/Java/extracurricular/spring",
     "learning/markdown语法.md",
     "learning/projects/smart-square/learning-records/0001-tech-stack-overview.md",
     "learning/projects/smart-square/learning-records/0002-spring-boot-basics-in-admin.md",
-    "learning/backend/Java/extracurricular/课外02-Java项目文件结构.md",
     "images/JAVA",
     "images/JAVA/file-structrue.png",
-    "learning/backend/Java/02-面向后端开发的JavaSE补强.md",
     "images/suqare-backend.png",
     "images/Java-file-complex.png",
-    "learning/backend/Java/extracurricular/未命名",
-    "learning/backend/Java/开源练手项目推荐.md",
-    "learning/backend/Java/03-Spring核心思想.md",
-    "learning/backend/Java/芋道项目学习地图.md",
-    "learning/backend/Java/实操01-VSCode运行与调试Java.md",
     "learning/backend/Java/extracurricular/examples/extra01-annotation-reflection/AnnotationReflectionDemo.java",
     "learning/backend/Java/extracurricular/examples/extra01-annotation-reflection",
     "learning/backend/Java/extracurricular/examples",
-    "learning/backend/Java/extracurricular/知识碎片/202609.md",
     "learning/backend/Java/extracurricular/知识碎片",
-    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
     "learning/backend/Java/课外01-Java注解与反射.md",
-    "learning/backend/Java/extracurricular",
-    "learning/backend/Java/examples/extra01-annotation-reflection/AnnotationReflectionDemo.java",
-    "learning/backend/Java/examples/extra01-annotation-reflection",
     "learning/backend/Java/知识碎片/202609.md",
-    "learning/backend/Java/知识碎片",
     "learning/AICli/统计token.md",
-    "learning/backend/Java/READEME.md",
-    "learning/backend/Java/01-Java后端工程入门.md",
     "learning/stars/skill.md",
-    "daily/2026/09.md",
-    "learning/todo/test.md",
-    "learning/todo/202608.md",
     "images/token-usage.png",
     "Pasted image 20260914104322.png",
-    "learning/Agent/架构优先型/CONTEXT.md",
-    "learning/Agent/架构优先型/lessons/0001-agent-engineering-foundations.md",
-    "learning/Agent/架构优先型/README.md",
-    "learning/Agent/理论优先型/README.md",
-    "learning/Agent/Agent架构与平台开发学习路线.md",
-    "learning/Agent/Agent理论优先型学习路线.md",
-    "images/docker-architecture.webp",
-    "images/image.png",
-    "images/docker-compose.png",
-    "images/yaml-1.webp",
-    "yaml-1.webp"
+    "images/docker-architecture.webp"
   ]
 }
