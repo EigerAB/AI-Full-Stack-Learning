@@ -48,9 +48,65 @@
               "icon": "lucide-file",
               "title": "课外03-后端英文术语与概念词典"
             }
+          },
+          {
+            "id": "244d935728af6f97",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "课外01-Java注解与反射"
+            }
+          },
+          {
+            "id": "9692b2926775d053",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/lessons/01-Java后端工程入门.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "01-Java后端工程入门"
+            }
+          },
+          {
+            "id": "703bf57ae65f17d5",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/extracurricular/课外04-Maven、JVM与Spring生命周期.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "课外04-Maven、JVM与Spring生命周期"
+            }
+          },
+          {
+            "id": "b1f52bf03efb7d68",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/AINative/superpowers/Superpowers框架笔记.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Superpowers框架笔记"
+            }
           }
         ],
-        "currentTab": 2
+        "currentTab": 6
       }
     ],
     "direction": "vertical"
@@ -190,7 +246,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
+                "file": "learning/AINative/superpowers/Superpowers框架笔记.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -217,15 +273,19 @@
       "bases:新建数据库": false
     }
   },
-  "active": "07ad5c097636ecbb",
+  "active": "b1f52bf03efb7d68",
   "lastOpenFiles": [
-    "learning/backend/Java/lessons/03-Spring核心思想.md",
+    "learning/backend/Java/extracurricular/课外04-Maven、JVM与Spring生命周期.md",
+    "learning/backend/Java/extracurricular/课外06-类型系统、包与模块、内存管理.md",
+    "learning/backend/Java/extracurricular/课外05-程序执行过程与解释型语言.md",
+    "learning/backend/Java/lessons/01-Java后端工程入门.md",
+    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
     "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
     "learning/backend/Java/extracurricular/实操/实操01-VSCode运行与调试Java.md",
+    "learning/backend/Java/lessons/03-Spring核心思想.md",
     "learning/backend/Java/extracurricular/实操/实操02-VSCode创建Spring项目与运行XML示例.md",
     "learning/backend/Java/extracurricular/课外02-Java项目文件结构.md",
     "learning/backend/Java/extracurricular/知识碎片/202609.md",
-    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
     "learning/backend/Java/extracurricular/一些收藏.md",
     "learning/todo/202609.md",
     "learning/todo/202608.md",
@@ -236,7 +296,6 @@
     "learning/backend/Java/extracurricular/assets/spring-backend-overview-2026-09.prompt.md",
     "learning/backend/Java/READEME.md",
     "learning/backend/Java/extracurricular/assets",
-    "learning/backend/Java/lessons/01-Java后端工程入门.md",
     "learning/backend/Java/lessons",
     "learning/backend/Java/lessons/02-面向后端开发的JavaSE补强.md",
     "learning/backend/Java/芋道项目学习地图.md",
@@ -258,9 +317,6 @@
     "learning/backend/Java/extracurricular/examples",
     "learning/backend/Java/extracurricular/知识碎片",
     "learning/backend/Java/课外01-Java注解与反射.md",
-    "learning/backend/Java/知识碎片/202609.md",
-    "learning/AICli/统计token.md",
-    "learning/stars/skill.md",
     "images/token-usage.png",
     "Pasted image 20260914104322.png",
     "images/docker-architecture.webp"
