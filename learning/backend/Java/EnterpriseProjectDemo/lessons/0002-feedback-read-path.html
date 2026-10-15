@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>0002 · 查询链路：反馈分析页的四只 SQL</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<nav class="lesson-nav">EnterpriseProjectDemo · 反馈功能案例 · 第 2 课 ·
+  上一课：<a href="./0001-feedback-write-path.html">写入链路</a></nav>
+
+<h1>查询链路：反馈分析页的四只 SQL</h1>
+<p class="subtitle">目标：看懂管理端「监控管理 → 反馈分析」页的四个接口如何共用一个查询条件构造器，
+以及企业级查询的三个标配：组织隔离、分页、聚合统计。</p>
+
+<h2>一、一个页面 = 四个接口</h2>
+
+<div class="file">controller/ChatFeedbackController.java · service/chat/feedback/ChatFeedbackQueryService.java</div>
+
+<table>
+  <tr><th>页面元素</th><th>端点</th><th>Service 方法</th><th>SQL 形态</th></tr>
+  <tr><td>反馈列表</td><td><code>GET /chat/feedbacks</code></td><td><code>list()</code></td><td><code>selectPage</code> 分页</td></tr>
+  <tr><td>顶部统计卡</td><td><code>GET /chat/feedbacks/summary</code></td><td><code>summary()</code></td><td>单条 <code>COUNT/SUM(CASE)</code> 聚合</td></tr>
+  <tr><td>智能体下拉</td><td><code>GET /chat/feedbacks/agents</code></td><td><code>agents()</code></td><td><code>GROUP BY</code></td></tr>
+  <tr><td>查看详情弹窗</td><td><code>GET /chat/feedbacks/{id}</code></td><td><code>detail()</code></td><td><code>selectOne</code> + 关联查询</td></tr>
+</table>
+
+<p>控制器上挂 <code>@AdminAuth</code>——管理员才能进这个域。所有方法走同一个
+<code>query(param)</code> 私有方法构造条件，<b>四个接口共用一套过滤逻辑，永远不会出现"列表能筛、统计不能筛"的不一致。</b></p>
+
+<h2>二、共用查询条件：query() 逐行读</h2>
+
+<pre><code>var q = new QueryWrapper&lt;ChatFeedback&gt;()
+    .eq("ORG_CODE", org)                    // ① 组织隔离（永远第一个条件）
+    .isNotNull("FEEDBACK")                  // ② 只看已评价的（预占位行被排除）
+    .ge("FIRST_FEEDBACK_TIME", p.getFrom()) // ③ 时间范围
+    .lt("FIRST_FEEDBACK_TIME", p.getTo());
+if (p.getAgentProductId() != null) q.eq("AGENT_PRODUCT_ID", ...);   // ④ 可选筛选
+if (p.isUnassignedAgent())         q.isNull("AGENT_PRODUCT_ID");    //    「未关联智能体」反选
+if (p.getFeedback() != null)       q.eq("FEEDBACK", ...);
+if (p.getProblemType() != null)
+    q.apply("INSTR(',' || PROBLEM_TYPES || ',', {0}) > 0", ",irrelevant,"); // ⑤
+if (p.getKeyword() != null)
+    q.apply("INSTR(NOTE, {0}) > 0", p.getKeyword().trim());               // ⑥</code></pre>
+
+<p>三个值得记住的点：</p>
+
+<ul>
+  <li><b>组织隔离不是可选项，是构造器的第一行。</b><code>access.requireManagementOrganization()</code>
+    先取当前管理员所属组织，然后所有 SQL 都强制带 <code>ORG_CODE = ?</code>。
+    管理员永远看不到别的组织的数据——这种约束要<b>焊死在查询构造器里</b>，而不是靠每个接口记得加。</li>
+  <li><b>⑤ 暴露了存储设计的代价</b>：<code>PROBLEM_TYPES</code> 存的是逗号串（<code>"irrelevant,missing"</code>），
+    筛选时只能 <code>INSTR(',' || col || ',', ',x,')</code> 包边界匹配——走不了索引，也容易写错。
+    规范做法是关联子表。这里是「最多 4 个枚举值、数据量小」的务实取舍：<b>看到逗号串字段时，要能说出它省了什么、牺牲了什么。</b></li>
+  <li><b><code>apply()</code> + <code>{0}</code> 占位符</b> 是 MyBatis-Plus 手写 SQL 片段的安全方式——值走参数绑定，不拼字符串，防注入。</li>
+</ul>
+
+<h2>三、统计接口：一条 SQL 算完所有卡片</h2>
+
+<pre><code>.select("COUNT(*) AS TOTAL",
+        "SUM(CASE WHEN FEEDBACK='good' THEN 1 ELSE 0 END) AS GOOD_COUNT",
+        "SUM(CASE WHEN FEEDBACK='bad'  THEN 1 ELSE 0 END) AS BAD_COUNT",
+        "SUM(CASE WHEN INSTR(...) > 0 THEN 1 ELSE 0 END) AS IRRELEVANT", ...)</code></pre>
+
+<p><code>summary()</code> 用 <code>mapper.selectMaps(q)</code> 拿<b>单行多列</b>的聚合结果。
+注意注释：<i>"Single SQL snapshot keeps the numerator and denominator consistent"</i>——
+如果只查两次（先查总数再查差评数），两次之间插入一条新数据，差评率就算歪了。
+<b>同一画面的统计数字必须用同一条 SQL 的快照产出。</b></p>
+
+<h2>四、详情接口：快照 + 存活探测</h2>
+
+<p><code>detail(id)</code> 做的事体现了快照设计的另一半：</p>
+
+<ol>
+  <li>查反馈行（照样带 <code>ORG_CODE</code> + <code>FEEDBACK IS NOT NULL</code>）；</li>
+  <li><code>sessions.findBySessionIdAndUserId(...)</code> 探测原会话是否还在 → <code>sessionAvailable</code>；</li>
+  <li>会话还在才去消息表找原消息、查 <code>FM_SQUARE_CHAT_RUN_TASK</code> 的任务进度、拉上下文；
+    会话没了就直接返回快照字段，详情页照样能看。</li>
+</ol>
+
+<div class="keypoint">
+<b>模式识别：快照保证"底线可看"，在线关联提供"增强信息"。</b>
+两层分开，原数据删除时详情页优雅降级而不是 404。
+</div>
+
+<h2>五、类图速记</h2>
+
+<pre><code>ChatFeedbackController        @AdminAuth + @RequestMapping("/chat/feedbacks")
+      │ 只声明路由，无逻辑
+      ▼
+ChatFeedbackQueryService      @Transactional(readOnly = true)
+      │ query() 共用条件构造器
+      ▼
+ChatFeedbackAccessService     requireManagementOrganization() → ORG_CODE
+      │
+      ▼
+ChatFeedbackMapper            extends BaseMapper&lt;ChatFeedback&gt;
+      │ selectPage / selectMaps / selectOne
+      ▼
+FM_SQUARE_CHAT_FEEDBACK       DM8 · schema SMARTSQUARE</code></pre>
+
+<div class="quiz">
+<h2>自测</h2>
+
+<div class="q">
+  <p>1. 为什么四个接口共用 <code>query()</code> 而不是各自写条件？</p>
+  <button class="opt" data-ok="1">保证筛选口径一致，过滤条件改一处全部生效</button>
+  <button class="opt">为了减少 Controller 里的代码行数</button>
+  <button class="opt">因为四个接口返回相同的数据</button>
+  <div class="fb" data-ok-text="对：共用构造器 = 单一事实源，列表/统计/下拉永远同口径。"
+       data-no-text="提示：如果列表和统计各写一份条件，会发生什么不一致？"></div>
+</div>
+
+<div class="q">
+  <p>2. <code>summary()</code> 为什么用一条聚合 SQL 而不是分开查总数和差评数？</p>
+  <button class="opt" data-ok="1">同一快照保证分子分母一致，避免中途插入数据算歪比率</button>
+  <button class="opt">一条 SQL 比两条快，纯粹是性能优化</button>
+  <button class="opt">MyBatis-Plus 不支持连续两次查询</button>
+  <div class="fb" data-ok-text="对：性能是副产品，一致性才是动机。"
+       data-no-text="想想两次查询之间有人提交了条差评会发生什么。"></div>
+</div>
+
+<div class="q">
+  <p>3. <code>PROBLEM_TYPES</code> 逗号串字段做筛选的代价是？</p>
+  <button class="opt" data-ok="1">只能 INSTR 子串匹配，走不了索引，写错边界还会误命中</button>
+  <button class="opt">达梦不支持逗号串字段的 WHERE 条件</button>
+  <button class="opt">会导致事务无法提交</button>
+  <div class="fb" data-ok-text="对：规范解是子表，这里是小数据量的务实取舍。"
+       data-no-text="INSTR 是能查的——问题在它怎么查。"></div>
+</div>
+</div>
+
+<h2>动手任务（10 分钟）</h2>
+<ol>
+  <li>在 disql 里手写一遍 summary 的等价 SQL（不需要完全一样，能对上 good/bad/total 即可），
+    跑一次确认和页面数字一致。</li>
+  <li>把 <code>query()</code> 里 <code>INSTR(',' || PROBLEM_TYPES || ',', ...)</code> 这行
+    「翻译」成 plain SQL 写在纸上，说清楚为什么要前后补逗号。</li>
+  <li>挑一个你已经见过的列表页接口，套用本课的「共用条件构造器 + 组织隔离 + 分页」三段式
+    去重读它的实现。</li>
+</ol>
+
+<h2>延伸阅读</h2>
+<ul>
+  <li>一手源码：<code>ChatFeedbackQueryService.java</code> 全文（257 行，值得逐行读）</li>
+  <li>MyBatis-Plus 分页插件：<a href="https://baomidou.com/plugins/pagination/">baomidou.com/plugins/pagination</a></li>
+  <li>速查：<a href="../reference/feedback-feature-chain.html">反馈功能全链路地图</a></li>
+</ul>
+
+<footer>有疑问就问我——比如「为什么 agents 接口要用 MAX(AGENT_NAME)」这种细节。</footer>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # 03 Spring 核心思想
 
-[返回学习目录](READEME.md)
+[返回学习目录](learning/backend/Java/READEME.md)
 
 > 笔记状态：全章已整理。学习状态：待学习。  
 > 先修：第一章工程基础，第二章的类、接口、集合、注解和 Lambda。  

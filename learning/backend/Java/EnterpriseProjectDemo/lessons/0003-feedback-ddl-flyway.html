@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>0003 · 表是怎么生出来的：迁移脚本逐行读</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<nav class="lesson-nav">EnterpriseProjectDemo · 反馈功能案例 · 第 3 课 ·
+  上一课：<a href="./0002-feedback-read-path.html">查询链路</a> ·
+  <a href="./0001-feedback-write-path.html">写入链路</a></nav>
+
+<h1>表是怎么生出来的：迁移脚本逐行读</h1>
+<p class="subtitle">目标：拿到一个 Flyway 迁移文件，能读出三件事——它做了什么、
+为什么这么做、表设计如何反过来印证查询设计。</p>
+
+<div class="file">smart-square-chat/src/main/resources/db/migration/V1.0.10__add_chat_feedback_analysis.sql</div>
+
+<h2>一、先认识 Flyway：DDL 也要版本控制</h2>
+
+<p>表结构不能用"上去连库敲 ALTER"的方式维护——多人开发、多套环境，谁也不知道
+某个环境现在的表长什么样。Flyway 的做法：所有 DDL 写成版本化脚本，按文件名顺序执行，
+每张表只在 <code>flyway_schema_history_chat</code> 里记录一次"已执行"。</p>
+
+<p>文件名即契约：<code>V1.0.10__add_chat_feedback_analysis.sql</code> =
+版本号 <code>V1.0.10</code> + 双下划线 + 描述。<b>已执行的脚本禁止修改</b>
+（改了就对不上历史记录的校验和），要修正只能写 <code>V1.0.11</code> 新脚本——
+所以你会在仓库里看到 1.0.10 建表、1.0.11 打补丁这种模式。</p>
+
+<h2>二、第一段：幂等建表</h2>
+
+<pre><code>DECLARE n INT;
+BEGIN
+    SELECT COUNT(*) INTO n FROM USER_TABLES
+     WHERE TABLE_NAME = 'FM_SQUARE_CHAT_FEEDBACK';
+    IF n = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE TABLE ...';
+    END IF;
+    ...
+END;
+/</code></pre>
+
+<p>脚本的头部注释写明设计意图：<i>「独立反馈分析存储，不导入旧测试反馈，不级联删除会话快照」</i>。</p>
+
+<p>整段包在达梦 PL/SQL 匿名块里，先查数据字典 <code>USER_TABLES</code> 再建表——
+<b>防御性幂等</b>：Flyway 保证脚本只跑一次，但作者仍假设"可能有个老环境已经手工建过表"，
+查一下再建，撞到旧库也不会报错中断。同一个块里后面还有三个同类判断：
+<code>USER_INDEXES</code> 查索引、<code>USER_TAB_COLUMNS</code> 查旧列
+（把废弃的 <code>MODIFIED_TIME</code> 列删掉）。</p>
+
+<div class="keypoint">
+<b>读法</b>：企业迁移脚本里 <code>IF n = 0 THEN EXECUTE IMMEDIATE</code> 这种壳子
+不是啰嗦，是"环境不可信"的标准防护服。判断标准：脚本能否在任何状态的库上安全执行。
+</div>
+
+<h2>三、列设计：每个类型都在回答问题</h2>
+
+<pre><code>ID               BIGINT IDENTITY(1,1) PRIMARY KEY,
+ORG_CODE         VARCHAR(128) NOT NULL,
+FEEDBACK         VARCHAR(8),              -- 可空：空=未评价/占位
+PROBLEM_TYPES    VARCHAR(128),
+NOTE             VARCHAR(1200),           -- 业务限300字
+QUESTION_TEXT    CLOB,
+ANSWER_TEXT      CLOB,
+FIRST_FEEDBACK_TIME TIMESTAMP,
+SNAPSHOT_TIME       TIMESTAMP NOT NULL,</code></pre>
+
+<table>
+  <tr><th>设计</th><th>回答的问题</th></tr>
+  <tr><td><code>IDENTITY(1,1)</code></td><td>达梦的自增列语法（等价 MySQL <code>AUTO_INCREMENT</code>），
+    对应实体里 <code>@TableId(type = IdType.AUTO)</code></td></tr>
+  <tr><td><code>FEEDBACK</code> 可空</td><td>行可以"先占位、后填评价"——所以查询端必须
+    <code>IS NOT NULL FEEDBACK</code> 过滤，两课前后呼应</td></tr>
+  <tr><td><code>NOTE VARCHAR(1200)</code></td><td>业务上限 300 字 × UTF-8 最多 4 字节/字 = 1200。
+    达梦默认按<b>字节</b>计 VARCHAR 长度（<code>LENGTH_IN_CHAR=0</code>），
+    末尾注释专门解释了这点——脚本作者连库的字符集语义都考虑了</td></tr>
+  <tr><td>问答文本用 <code>CLOB</code></td><td>VARCHAR 有长度天花板，快照内容不定长 → 大对象类型，
+    用空间换"永远放得下"</td></tr>
+  <tr><td><b>没有外键</b></td><td>关联会话/消息/智能体的列全是裸 <code>VARCHAR</code>。
+    快照表的哲学：故意不建 FK——原记录删了，快照行不受影响
+    （这就是 <code>ASSOCIATION_STATUS</code> 存在的原因）</td></tr>
+</table>
+
+<h2>四、索引是"查询需求的镜像"</h2>
+
+<pre><code>CREATE UNIQUE INDEX UK_CHAT_FEEDBACK_RUN
+    ON FM_SQUARE_CHAT_FEEDBACK (ORG_CODE, USER_ID, RUN_ID);
+CREATE INDEX IX_CHAT_FEEDBACK_TIME
+    ON FM_SQUARE_CHAT_FEEDBACK (ORG_CODE, FEEDBACK, FIRST_FEEDBACK_TIME, ID);
+CREATE INDEX IX_CHAT_FEEDBACK_AGENT
+    ON FM_SQUARE_CHAT_FEEDBACK (ORG_CODE, AGENT_PRODUCT_ID, FIRST_FEEDBACK_TIME, ID);</code></pre>
+
+<p>对照第 2 课 <code>query()</code> 的条件，三个索引各司其职：</p>
+
+<table>
+  <tr><th>索引</th><th>服务谁</th><th>列序逻辑</th></tr>
+  <tr><td><code>UK_*</code> 唯一索引</td><td>幂等兜底 + 提交查重</td><td>(org, user, runId) 恰好是幂等键</td></tr>
+  <tr><td><code>IX_*_TIME</code></td><td>列表/统计：组织内按评价过滤+时间范围</td><td>等值列在前（ORG_CODE、FEEDBACK），范围列在后（时间）</td></tr>
+  <tr><td><code>IX_*_AGENT</code></td><td>按智能体筛选的同一类查询</td><td>同上，把 FEEDBACK 换成 AGENT_PRODUCT_ID</td></tr>
+</table>
+
+<div class="keypoint">
+<b>更正我上节课的一个说法</b>：自测题里我说"唯一索引没有兜底"——其实
+<code>UK_CHAT_FEEDBACK_RUN</code> 就是兜底：两个并发请求同时
+<code>insert</code>，数据库层一定有一个被拒。<b>但它只能保证"不产生重复行"，
+给不出"同值重试放行 / 异值报不可修改"的语义</b>——语义层只能由 Service 的
+check-lock-check 完成。两道防线各自解决不同问题：索引管"数据不脏"，代码管"行为正确"。
+</div>
+
+<p><b>复合索引的口诀：等值在前、范围在后、排序垫底。</b>
+<code>ORG_CODE = ? AND FEEDBACK = ? AND FIRST_FEEDBACK_TIME &gt;= ? AND &lt; ?</code>
+这个查询形状，正好让等值条件先缩到小范围、范围列在索引内有序、
+<code>ID</code> 垫底稳住倒序分页。</p>
+
+<h2>五、COMMENT ON：把文档写进数据库</h2>
+
+<p>建表后紧跟 23 行 <code>COMMENT ON COLUMN ... IS '...'</code>。
+Navicat/DM 管理工具里直接显示字段含义，比只写在 wiki 里可靠——
+文档会过期，紧贴表结构的注释不会。注意 <code>FEEDBACK</code> 的注释
+<i>「最新评价，空表示已清除」</i>，它解释了为什么查询端要过滤 NULL。</p>
+
+<h2>六、第二段：改别人的表也要防御</h2>
+
+<p>脚本末尾另一个匿名块处理 <code>FM_SQUARE_CHAT_MESSAGE.FEEDBACK_NOTE</code>：
+查 <code>ALL_TAB_COLUMNS</code> 里该列当前 <code>DATA_LENGTH</code>，
+<b>小于 1200 才</b> <code>MODIFY</code> 扩容——只扩不缩、有就跳过。
+一次迁移做两件事（建新表 + 修旧表），但每步都可安全重复。</p>
+
+<div class="quiz">
+<h2>自测</h2>
+
+<div class="q">
+  <p>1. 为什么已执行的 Flyway 脚本禁止修改，要改只能写新版本？</p>
+  <button class="opt" data-ok="1">历史记录按校验和核对已执行脚本，改了会导致已执行环境校验失败/行为分叉</button>
+  <button class="opt">为了节省磁盘空间，避免重复存储 DDL</button>
+  <button class="opt">因为 SQL 文件一旦执行就自动变为只读</button>
+  <div class="fb" data-ok-text="对：flyway_schema_history 里存了校验和，脚本变=签名变。"
+       data-no-text="想想 flyway_schema_history 表是干什么用的。"></div>
+</div>
+
+<div class="q">
+  <p>2. <code>NOTE VARCHAR(1200)</code> 为什么不是 300？</p>
+  <button class="opt" data-ok="1">达梦按字节计长，300 个汉字 UTF-8 下最多占 1200 字节</button>
+  <button class="opt">预留扩展空间，将来可能放宽到 1200 字</button>
+  <button class="opt">1200 是达梦 VARCHAR 的最小可用值</button>
+  <div class="fb" data-ok-text="对：LENGTH_IN_CHAR=0 时按字节算，脚本注释专门写了这条。"
+       data-no-text="提示：看脚本第 78 行的注释——这跟字符集有关。"></div>
+</div>
+
+<div class="q">
+  <p>3. 既然有 <code>UK_CHAT_FEEDBACK_RUN</code> 唯一索引，为什么还要 Service 层做幂等检查？</p>
+  <button class="opt" data-ok="1">索引只能挡重复行，给不出"同值放行/异值报错"的业务语义</button>
+  <button class="opt">唯一索引在高并发下会失效，必须代码层补充</button>
+  <button class="opt">代码检查更快，能少一次数据库往返</button>
+  <div class="fb" data-ok-text="对：索引管数据不脏，代码管行为正确——两道防线。"
+       data-no-text="唯一索引本身在 DB 层是有效的——它缺的不是能力，是语义。"></div>
+</div>
+
+<div class="q">
+  <p>4. <code>IX_CHAT_FEEDBACK_TIME (ORG_CODE, FEEDBACK, FIRST_FEEDBACK_TIME, ID)</code> 的列序依据是？</p>
+  <button class="opt" data-ok="1">等值条件列在前，范围条件列在后，排序辅助列垫底</button>
+  <button class="opt">按列在表中的物理顺序排列</button>
+  <button class="opt">按列名字典序排列，便于维护</button>
+  <div class="fb" data-ok-text="对：等值先缩小范围，索引内排序供范围扫描。"
+       data-no-text="想想这个索引服务的 WHERE 长什么样。"></div>
+</div>
+</div>
+
+<h2>动手任务（10 分钟）</h2>
+<ol>
+  <li>在 <code>smart-square-chat/src/main/resources/db/migration/</code> 里数一下
+    一共有多少个 <code>V*.sql</code>，找出 <code>V1.0.11</code> 做了什么
+    ——它就是"已执行脚本不可改、只能补丁"的活例子。</li>
+  <li>在 disql 里跑 <code>SELECT INDEX_NAME, COLUMN_NAME FROM USER_IND_COLUMNS
+    WHERE TABLE_NAME='FM_SQUARE_CHAT_FEEDBACK' ORDER BY INDEX_NAME, COLUMN_POSITION;</code>
+    对照脚本验证三个索引真实存在。</li>
+  <li>合上脚本，凭记忆写出这张表的三个索引及其列序，再打开对照。</li>
+</ol>
+
+<h2>延伸阅读</h2>
+<ul>
+  <li>Flyway 官方：<a href="https://documentation.red-gate.com/flyway/">documentation.red-gate.com/flyway</a>
+    （看 "Migrations" 和 "Validate" 概念）</li>
+  <li>速查：<a href="../reference/feedback-feature-chain.html">反馈功能全链路地图</a></li>
+  <li>下一课（可选）：<code>@Transactional</code> 与行锁，或 DTO/Param/Result 三层对象的分工——告诉我选哪个。</li>
+</ul>
+
+<footer>有疑问直接问我——比如「为什么索引列序里 ID 要垫底」这种追问。</footer>
+</body>
+</html>

@@ -4,67 +4,67 @@
     "type": "split",
     "children": [
       {
-        "id": "052dee6048442d30",
+        "id": "e107a8c715350cf0",
         "type": "tabs",
         "children": [
           {
-            "id": "b465f82d461e9274",
+            "id": "e03515c4b9f3a328",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/backend/Java/lessons/03-Spring核心思想.md",
-                "mode": "preview",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "03-Spring核心思想"
-            }
-          },
-          {
-            "id": "f6783106d9a17fac",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "learning/backend/Java/extracurricular/实操/实操01-VSCode运行与调试Java.md",
+                "file": "daily/2026/10.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "实操01-VSCode运行与调试Java"
+              "title": "10"
             }
           },
           {
-            "id": "07ad5c097636ecbb",
+            "id": "b197cf3b5b4db724",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
-                "mode": "preview",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "课外03-后端英文术语与概念词典"
-            }
-          },
-          {
-            "id": "244d935728af6f97",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
+                "file": "learning/backend/Java/READEME.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "课外01-Java注解与反射"
+              "title": "READEME"
             }
           },
           {
-            "id": "9692b2926775d053",
+            "id": "d70942db24d25e37",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/backend/Java/extracurricular/一些收藏.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "一些收藏"
+            }
+          },
+          {
+            "id": "f32280c352d1c1b5",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/AINative/superpowers/Superpowers框架笔记.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Superpowers框架笔记"
+            }
+          },
+          {
+            "id": "24fec696df497fce",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -78,31 +78,59 @@
             }
           },
           {
-            "id": "703bf57ae65f17d5",
+            "id": "a3a313a862857fc8",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "learning/backend/Java/extracurricular/课外04-Maven、JVM与Spring生命周期.md",
-                "mode": "preview",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "课外04-Maven、JVM与Spring生命周期"
-            }
-          },
-          {
-            "id": "b1f52bf03efb7d68",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "learning/AINative/superpowers/Superpowers框架笔记.md",
+                "file": "learning/projects/zeno-platform/learning/learning-records/0001-two-phase-chat-protocol.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Superpowers框架笔记"
+              "title": "0001-two-phase-chat-protocol"
+            }
+          },
+          {
+            "id": "3fe5a7db9e3b1f02",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/Agent/架构优先型/lessons/0001-agent-engineering-foundations.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "0001-agent-engineering-foundations"
+            }
+          },
+          {
+            "id": "ba1884914b461251",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "learning/AINative/skill语法.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "skill语法"
+            }
+          },
+          {
+            "id": "2c66c1a9f97ae516",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "daily/2026/09.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "09"
             }
           }
         ],
@@ -140,7 +168,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "",
+                "query": "html",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -246,7 +274,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "learning/AINative/superpowers/Superpowers框架笔记.md",
+                "file": "learning/Agent/架构优先型/lessons/0001-agent-engineering-foundations.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -273,52 +301,53 @@
       "bases:新建数据库": false
     }
   },
-  "active": "b1f52bf03efb7d68",
+  "active": "e02ca5b64d5e98c2",
   "lastOpenFiles": [
-    "learning/backend/Java/extracurricular/课外04-Maven、JVM与Spring生命周期.md",
-    "learning/backend/Java/extracurricular/课外06-类型系统、包与模块、内存管理.md",
-    "learning/backend/Java/extracurricular/课外05-程序执行过程与解释型语言.md",
+    "learning/projects/zeno-platform/learning/learning-records/0001-two-phase-chat-protocol.md",
     "learning/backend/Java/lessons/01-Java后端工程入门.md",
-    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
-    "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
-    "learning/backend/Java/extracurricular/实操/实操01-VSCode运行与调试Java.md",
-    "learning/backend/Java/lessons/03-Spring核心思想.md",
-    "learning/backend/Java/extracurricular/实操/实操02-VSCode创建Spring项目与运行XML示例.md",
-    "learning/backend/Java/extracurricular/课外02-Java项目文件结构.md",
-    "learning/backend/Java/extracurricular/知识碎片/202609.md",
+    "learning/AINative/superpowers/Superpowers框架笔记.md",
+    "learning/AINative/skill语法.md",
     "learning/backend/Java/extracurricular/一些收藏.md",
-    "learning/todo/202609.md",
-    "learning/todo/202608.md",
-    "images/JAVA/Spring Framework.png",
-    "learning/backend/Java/extracurricular/知识碎片/draft/2026-09.md",
-    "images/JAVA/Spring.md",
-    "learning/backend/Java/extracurricular/assets/spring-backend-overview-2026-09.png",
-    "learning/backend/Java/extracurricular/assets/spring-backend-overview-2026-09.prompt.md",
     "learning/backend/Java/READEME.md",
-    "learning/backend/Java/extracurricular/assets",
-    "learning/backend/Java/lessons",
+    "daily/2026/10.md",
+    "daily/2026/09.md",
+    "learning/AICli/统计token.md",
+    "learning/database/sql/READEME.md",
+    "learning/database/SQLAPP/Navicat/READEME.md",
+    "learning/backend/Java/EnterpriseProjectDemo/lessons/0003-feedback-ddl-flyway.html",
+    "learning/backend/Java/EnterpriseProjectDemo/learning-records/0001-feedback-crud-chain.md",
+    "learning/backend/Java/EnterpriseProjectDemo/learning-records",
+    "learning/backend/Java/EnterpriseProjectDemo/reference/feedback-feature-chain.html",
+    "learning/backend/Java/EnterpriseProjectDemo/reference",
+    "learning/backend/Java/EnterpriseProjectDemo/lessons/0002-feedback-read-path.html",
+    "learning/backend/Java/EnterpriseProjectDemo/lessons/0001-feedback-write-path.html",
+    "learning/backend/Java/EnterpriseProjectDemo/lessons",
+    "learning/backend/Java/EnterpriseProjectDemo/assets/quiz.js",
+    "learning/backend/Java/EnterpriseProjectDemo/assets/lesson.css",
+    "learning/backend/Java/EnterpriseProjectDemo/assets",
+    "learning/backend/Java/EnterpriseProjectDemo/NOTES.md",
+    "learning/backend/Java/EnterpriseProjectDemo/RESOURCES.md",
+    "learning/backend/Java/EnterpriseProjectDemo/MISSION.md",
+    "learning/backend/docker/1-intro.md",
+    "test.md",
+    "learning/backend/Java/extracurricular/课外03-后端英文术语与概念词典.md",
+    "learning/backend/Java/extracurricular/课外06-类型系统、包与模块、内存管理.md",
+    "learning/backend/Java/lessons/03-Spring核心思想.md",
+    "learning/backend/Java/extracurricular/课外01-Java注解与反射.md",
     "learning/backend/Java/lessons/02-面向后端开发的JavaSE补强.md",
+    "learning/database/postgreSQL/READEME.md",
+    "learning/backend/docker/4-network.md",
+    "learning/backend/docker/3-command.md",
     "learning/backend/Java/芋道项目学习地图.md",
-    "learning/backend/Java/开源练手项目推荐.md",
-    "learning/backend/Java/extracurricular/实操",
-    "learning/backend/Java/extracurricular/知识碎片/draft",
-    "learning/python/uv-workflow.md",
+    "Pasted image 20260929103758.png",
+    "Pasted image 20260929103754.png",
+    "Pasted image 20260929103751.png",
+    "Pasted image 20260929103630.png",
+    "images/JAVA/Spring Framework.png",
+    "learning/backend/Java/extracurricular/assets/spring-backend-overview-2026-09.png",
     "images/JAVA/API Progress.png",
-    "learning/backend/Java/extracurricular/spring",
-    "learning/markdown语法.md",
-    "learning/projects/smart-square/learning-records/0001-tech-stack-overview.md",
-    "learning/projects/smart-square/learning-records/0002-spring-boot-basics-in-admin.md",
-    "images/JAVA",
     "images/JAVA/file-structrue.png",
     "images/suqare-backend.png",
-    "images/Java-file-complex.png",
-    "learning/backend/Java/extracurricular/examples/extra01-annotation-reflection/AnnotationReflectionDemo.java",
-    "learning/backend/Java/extracurricular/examples/extra01-annotation-reflection",
-    "learning/backend/Java/extracurricular/examples",
-    "learning/backend/Java/extracurricular/知识碎片",
-    "learning/backend/Java/课外01-Java注解与反射.md",
-    "images/token-usage.png",
-    "Pasted image 20260914104322.png",
-    "images/docker-architecture.webp"
+    "images/Java-file-complex.png"
   ]
 }

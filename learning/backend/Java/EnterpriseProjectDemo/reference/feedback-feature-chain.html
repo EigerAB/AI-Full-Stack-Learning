@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>速查 · 反馈功能全链路地图（FM_SQUARE_CHAT_FEEDBACK）</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  .lane { border: 1px solid var(--rule); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0; background: #fff; }
+  .lane b.tag { display: inline-block; min-width: 5.5em; color: var(--accent); }
+  .mono { font-family: Consolas, monospace; font-size: .85rem; }
+</style>
+</head>
+<body>
+
+<nav class="lesson-nav">速查 ·
+  <a href="../lessons/0001-feedback-write-path.html">课 0001 写入</a> ·
+  <a href="../lessons/0002-feedback-read-path.html">课 0002 查询</a></nav>
+
+<h1>反馈功能全链路地图</h1>
+<p class="subtitle">表：<code>FM_SQUARE_CHAT_FEEDBACK</code> · 库：达梦 DM8 ·
+容器 <code>smart-square-dm</code>（localhost:5236，schema <code>SMARTSQUARE</code>）·
+代码：<code>D:\projects\smart-square-back\smart-square-chat</code></p>
+
+<h2>写入链路（C，唯一入口）</h2>
+
+<div class="lane"><b class="tag">前端</b><span class="mono">aichat: api/chat-session.ts → updateChatMessageFeedback()</span></div>
+<div class="lane"><b class="tag">HTTP</b><span class="mono">PUT /chat/messages/runs/{runId}/feedback  {feedback, problemTypes, note}</span></div>
+<div class="lane"><b class="tag">网关</b><span class="mono">smart-square-gateway → Nacos → smart-square-chat</span></div>
+<div class="lane"><b class="tag">Controller</b><span class="mono">ChatMessageController.updateFeedback() (@PutMapping)</span></div>
+<div class="lane"><b class="tag">Service</b><span class="mono">ChatMessageFeedbackService.updateFeedback() @Transactional</span></div>
+<div class="lane"><b class="tag">内部步骤</b>解析校验 → 幂等查 <code>ChatFeedbackMapper.selectOne</code> →
+  消息定位 <code>findLatestAssistantByRunIdAndUserId</code> → 会话锁 <code>findBySessionIdAndUserIdForUpdate</code> →
+  锁内复查 → <code>persistFeedback</code>（快照 populate + insert/updateById）→ 消息冗余列 updateFeedback</div>
+<div class="lane"><b class="tag">落库</b><span class="mono">FM_SQUARE_CHAT_FEEDBACK（upsert）+ FM_SQUARE_CHAT_MESSAGE.FEEDBACK*（同步冗余）</span></div>
+
+<h2>查询链路（R，管理端反馈分析页）</h2>
+
+<div class="lane"><b class="tag">入口</b><span class="mono">ChatFeedbackController  GET /chat/feedbacks/**  @AdminAuth</span></div>
+<div class="lane"><b class="tag">共用条件</b><span class="mono">ChatFeedbackQueryService.query()：
+  ORG_CODE=管理组织 · FEEDBACK 非空 · FIRST_FEEDBACK_TIME∈[from,to) · 可选 agent/评价/问题类型/关键词</span></div>
+
+<table>
+  <tr><th>端点</th><th>方法</th><th>Mapper 调用</th><th>SELECT 要点</th></tr>
+  <tr><td class="mono">GET /chat/feedbacks</td><td>list()</td><td>selectPage</td><td>按 FIRST_FEEDBACK_TIME 倒序分页</td></tr>
+  <tr><td class="mono">GET /chat/feedbacks/summary</td><td>summary()</td><td>selectMaps</td><td>单条聚合：TOTAL/GOOD/BAD/四类问题数</td></tr>
+  <tr><td class="mono">GET /chat/feedbacks/agents</td><td>agents()</td><td>selectPage</td><td>GROUP BY AGENT_PRODUCT_ID</td></tr>
+  <tr><td class="mono">GET /chat/feedbacks/{id}</td><td>detail()</td><td>selectOne + 关联</td><td>快照字段 + 会话存活探测 + run_task/上下文增强</td></tr>
+</table>
+
+<h2>U / D：被业务禁掉</h2>
+<ul>
+  <li>无修改：feedback 非空后提交不同值 → <code>INVALID_PARAMETER</code>「反馈已提交」</li>
+  <li>无删除：会话删除不清理反馈行，<code>ASSOCIATION_STATUS</code> 标记失联</li>
+</ul>
+
+<h2>文件索引</h2>
+
+<table>
+  <tr><th>角色</th><th>文件（相对 smart-square-chat/）</th></tr>
+  <tr><td>写入口</td><td class="mono">controller/ChatMessageController.java</td></tr>
+  <tr><td>写服务</td><td class="mono">service/chat/ChatMessageFeedbackService.java</td></tr>
+  <tr><td>读入口</td><td class="mono">controller/ChatFeedbackController.java</td></tr>
+  <tr><td>读服务</td><td class="mono">service/chat/feedback/ChatFeedbackQueryService.java</td></tr>
+  <tr><td>组织隔离</td><td class="mono">service/chat/feedback/ChatFeedbackAccessService.java</td></tr>
+  <tr><td>快照填充</td><td class="mono">service/chat/feedback/ChatFeedbackSnapshotResolver.java</td></tr>
+  <tr><td>实体/Mapper</td><td class="mono">entity/ChatFeedback.java · mapper/ChatFeedbackMapper.java</td></tr>
+  <tr><td>DTO</td><td class="mono">dto/params/chat/feedback/QueryChatFeedbackParam.java · dto/result/chat/feedback/*</td></tr>
+  <tr><td>建表</td><td class="mono">resources/db/migration/V1.0.10__add_chat_feedback_analysis.sql</td></tr>
+  <tr><td>设计文档</td><td class="mono">docs/superpowers/specs/2026-09-29-aichat-feedback-analysis-design.md</td></tr>
+</table>
+
+<h2>注解速查</h2>
+
+<table>
+  <tr><th>注解</th><th>层</th><th>含义</th></tr>
+  <tr><td class="mono">@RestController</td><td>Controller</td><td>方法返回值直接序列化为 JSON 响应</td></tr>
+  <tr><td class="mono">@PutMapping/@GetMapping</td><td>Controller</td><td>把 HTTP 方法+路径绑到 Java 方法</td></tr>
+  <tr><td class="mono">@AdminAuth</td><td>Controller 类</td><td>自定义注解：仅管理员可访问</td></tr>
+  <tr><td class="mono">@Transactional</td><td>Service 方法</td><td>方法内 DB 操作同一事务，异常回滚；readOnly=true 是只读优化提示</td></tr>
+  <tr><td class="mono">@TableName</td><td>Entity</td><td>MyBatis-Plus：类↔表映射</td></tr>
+  <tr><td class="mono">@TableField(updateStrategy=ALWAYS)</td><td>Entity 字段</td><td>即使字段为 null 也写进 UPDATE（用于把列清空）</td></tr>
+  <tr><td class="mono">@RequiredArgsConstructor</td><td>类</td><td>Lombok：为 final 字段生成构造器，配合构造器注入</td></tr>
+</table>
+
+<h2>表字段速记</h2>
+
+<table>
+  <tr><th>列</th><th>含义</th></tr>
+  <tr><td class="mono">ORG_CODE / USER_ID</td><td>组织隔离键 + 提交人（幂等键的一半）</td></tr>
+  <tr><td class="mono">SESSION_ID / RUN_ID / MESSAGE_ID</td><td>定位三元组：哪次会话的哪次运行的哪条回答</td></tr>
+  <tr><td class="mono">FEEDBACK / PROBLEM_TYPES / NOTE</td><td>评价本体：good/bad · 逗号串问题类型 · 备注</td></tr>
+  <tr><td class="mono">QUESTION_TEXT / ANSWER_TEXT / QUESTION_SUMMARY</td><td>快照：评价时刻的问答内容</td></tr>
+  <tr><td class="mono">ASSOCIATION_STATUS</td><td>原会话/消息是否还能关联上</td></tr>
+  <tr><td class="mono">FIRST_FEEDBACK_TIME / SNAPSHOT_TIME</td><td>首次评价时间（查询过滤轴）/ 快照时间</td></tr>
+</table>
+
+<footer>打印友好 · 配套课程在 ../lessons/</footer>
+</body>
+</html>

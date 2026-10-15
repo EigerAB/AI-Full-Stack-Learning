@@ -1,6 +1,6 @@
 # 实操 01：在 VS Code 中运行与调试 Java
 
-[返回学习目录](READEME.md)
+[返回学习目录](learning/backend/Java/READEME.md)
 
 > 笔记状态：完整课程。学习状态：待实践。  
 > 适用环境：Windows、VS Code、Java 17；界面名称同时给出常见英文，菜单位置可能随版本变化。  

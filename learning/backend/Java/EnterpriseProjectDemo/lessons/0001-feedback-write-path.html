@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>0001 · 写入链路：一次点踩如何落库</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+
+<nav class="lesson-nav">EnterpriseProjectDemo · 反馈功能案例 · 第 1 课</nav>
+
+<h1>写入链路：一次点踩如何落库</h1>
+<p class="subtitle">目标：能把 <code>PUT /chat/messages/runs/{runId}/feedback</code> 到表
+<code>FM_SQUARE_CHAT_FEEDBACK</code> 的每一层代码指出来，并说清每层只管什么。</p>
+
+<h2>一、先建立地图：四层各司其职</h2>
+
+<div class="flow">
+  <p class="step"><b>浏览器（aichat）</b> 用户点「踩」，前端调
+    <code>PUT /gmp/agent-platform/chat/messages/runs/{runId}/feedback</code>，
+    body 是 <code>{feedback, problemTypes, note}</code></p>
+  <p class="arrow">↓ Spring Cloud Gateway 按 /chat/** 路由 + 注入可信身份头</p>
+  <p class="step"><b>Controller（协议层）</b> 解析 HTTP → 校验参数 → 调 Service → 包装返回值。
+    <i>不写业务逻辑</i></p>
+  <p class="arrow">↓</p>
+  <p class="step"><b>Service（业务层）</b> 编排业务规则：幂等、加锁、校验、决定写什么。
+    <i>不写 SQL 细节，靠 Mapper</i></p>
+  <p class="arrow">↓</p>
+  <p class="step"><b>Mapper（持久层）</b> MyBatis-Plus 接口，把方法调用翻译成 SQL。
+    <i>不知道"为什么查"，只知道"怎么查"</i></p>
+  <p class="arrow">↓</p>
+  <p class="step"><b>达梦 DM8</b> 表 <code>FM_SQUARE_CHAT_FEEDBACK</code></p>
+</div>
+
+<p>记住一句话：<b>Controller 管协议、Service 管业务、Mapper 管 SQL</b>。读任何后端代码先用这把刀切。</p>
+
+<h2>二、Controller：薄得像纸</h2>
+
+<div class="file">smart-square-chat/.../controller/ChatMessageController.java</div>
+
+<pre><code>@PutMapping("/runs/{runId}/feedback")
+public AguiChatMessageFeedbackResult updateFeedback(
+        @PathVariable String runId,
+        @Valid @RequestBody AguiUpdateChatMessageFeedbackParam param) {
+    return feedbackService.updateFeedback(runId, param);
+}</code></pre>
+
+<p>三件事：<code>@PutMapping</code> 把 URL 绑到方法、<code>@PathVariable</code>/<code>@RequestBody</code> 取出参数、
+<code>@Valid</code> 触发参数校验。然后立刻把活交给 Service。<b>判断标准：Controller 里如果出现 if/else 业务判断，就是写错层了。</b></p>
+
+<h2>三、Service：全部业务都在这</h2>
+
+<div class="file">smart-square-chat/.../service/chat/ChatMessageFeedbackService.java</div>
+
+<p><code>updateFeedback()</code> 方法上挂着 <code>@Transactional</code>——整个方法要么全成功、要么全回滚。
+内部依次做了四件事：</p>
+
+<ol>
+  <li><b>解析与校验</b>：<code>parseFeedback</code> 只认 <code>good/bad</code>；
+    <code>validateCombination</code> 规定好评不能带问题类型。</li>
+  <li><b>幂等检查</b> <code>isSubmittedFeedback</code>：先按
+    <code>org + userId + runId</code> 查表——如果已提交过一模一样的值，直接返回成功（网络重试安全）；
+    如果已提交但值不同，抛「反馈已提交，不支持修改或清除」。</li>
+  <li><b>会话行锁</b>：<code>findBySessionIdAndUserIdForUpdate</code>（SQL 的
+    <code>FOR UPDATE</code>）把会话行锁住，然后<b>再查一次</b>幂等——防止两个并发请求同时通过第一次检查。</li>
+  <li><b>双写</b>：<code>persistFeedback</code> upsert 反馈表；
+    <code>chatMessageMapper.updateFeedback</code> 同步消息表的冗余列。</li>
+</ol>
+
+<div class="keypoint">
+<b>为什么查两次幂等？</b>这是教科书式的「检查-加锁-再检查」（check-lock-check）：
+第一次检查挡掉 99% 的重复请求（省锁），拿锁之后再查一次挡掉并发间隙。
+单看任何一次都不够，合起来才对。
+</div>
+
+<h2>四、快照：反馈行自己存一份问答</h2>
+
+<p><code>persistFeedback</code> 里新建行时调 <code>ChatFeedbackSnapshotResolver.populate(row, message)</code>，
+把<b>当时</b>的问题文本、回答文本、智能体名拷进反馈行（<code>QUESTION_TEXT/ANSWER_TEXT/AGENT_NAME</code>）。</p>
+
+<div class="keypoint">
+<b>为什么冗余拷贝而不是 join 查消息表？</b>因为消息可能被删、被改。
+快照让反馈分析页拿到的永远是「用户评价那一刻看到的内容」，
+配合 <code>ASSOCIATION_STATUS</code> 标记「原会话还在不在」。
+<b>教训：凡是"事后审计/分析"类数据，优先考虑快照而不是外键 join。</b>
+</div>
+
+<h2>五、Mapper 与 Entity：最少代码的一层</h2>
+
+<div class="file">entity/ChatFeedback.java · mapper/ChatFeedbackMapper.java</div>
+
+<pre><code>@TableName("FM_SQUARE_CHAT_FEEDBACK")
+public class ChatFeedback extends BaseEntity { /* 字段即列名驼峰映射 */ }
+
+public interface ChatFeedbackMapper extends BaseMapper&lt;ChatFeedback&gt; {}</code></pre>
+
+<p>MyBatis-Plus 模式下：实体类用 <code>@TableName</code> 声明表名，字段自动映射列名；
+Mapper 接口继承 <code>BaseMapper</code> 就白拿 <code>insert/selectOne/selectPage/updateById</code>
+等全套方法，连 XML 都不用写。Service 里条件查询用
+<code>LambdaQueryWrapper</code>（编译期类型安全）或 <code>QueryWrapper</code>（手写列名）。</p>
+
+<h2>六、这张表没有 U 和 D</h2>
+
+<p>CRUD 里这张表实际只有 <b>C + R</b>：</p>
+
+<ul>
+  <li><b>Update 被业务禁掉</b>：第一次提交后 <code>FEEDBACK</code> 非空，再提交不同值就抛错——「评价不可修改」是产品决策，用代码强制。</li>
+  <li><b>Delete 没有接口</b>：会话删除时消息和附件会被清理，但反馈行<b>故意保留</b>——分析页要的就是"当时发生过差评"这个事实，靠 <code>ASSOCIATION_STATUS</code> 标记原会话已不存在。</li>
+</ul>
+
+<div class="quiz">
+<h2>自测（凭记忆回答，答完再看解析）</h2>
+
+<div class="q">
+  <p>1. 用户双击「踩」发出两个一模一样的请求，后端靠什么保证不产生两条脏数据？</p>
+  <button class="opt" data-ok="1">先查幂等 → 会话行锁 → 锁内再查幂等</button>
+  <button class="opt">靠数据库唯一索引兜底拒绝</button>
+  <button class="opt">靠 @Transactional 自动去重</button>
+  <div class="fb" data-ok-text="对：幂等查询挡重复，行锁挡并发，锁内复查堵间隙。"
+       data-no-text="再想想——唯一索引这里没有兜底这个场景，事务也不负责去重。"></div>
+</div>
+
+<div class="q">
+  <p>2. 反馈表自己存了 QUESTION_TEXT/ANSWER_TEXT 副本，主要解决什么问题？</p>
+  <button class="opt" data-ok="1">原消息被删改后，分析页仍能看到当时的内容</button>
+  <button class="opt">避免 join，纯粹为了查询性能</button>
+  <button class="opt">达梦不支持多表关联查询</button>
+  <div class="fb" data-ok-text="对：快照保证'评价对象'不可变。性能是副产品，不是动机。"
+       data-no-text="提示：想想 ASSOCIATION_STATUS 标记的是什么场景。"></div>
+</div>
+
+<div class="q">
+  <p>3. 「好评不能带问题类型」这条规则校验写在哪一层？</p>
+  <button class="opt" data-ok="1">Service 的 validateCombination</button>
+  <button class="opt">Controller 的 @Valid 注解</button>
+  <button class="opt">数据库 CHECK 约束</button>
+  <div class="fb" data-ok-text="对：这是跨字段业务规则，归 Service。@Valid 只做格式级校验。"
+       data-no-text="@Valid 管的是'字段格式对不对'；'两个字段的组合合不合业务'是 Service 的活。"></div>
+</div>
+</div>
+
+<h2>动手任务（5 分钟）</h2>
+<ol>
+  <li>打开 <code>ChatMessageFeedbackService.java</code>，给 <code>updateFeedback</code>
+    方法里每一行注释上它属于「校验 / 幂等 / 锁 / 写库」哪一类。</li>
+  <li>在容器里跑：<code>SELECT * FROM SMARTSQUARE.FM_SQUARE_CHAT_FEEDBACK ORDER BY ID DESC LIMIT 3</code>，
+    对照实体类确认每个字段你都能说出业务含义。</li>
+</ol>
+
+<h2>延伸阅读</h2>
+<ul>
+  <li>一手源码：<code>ChatMessageFeedbackService.java</code> 全文（重点读 63–116 行的主方法）</li>
+  <li>MyBatis-Plus 条件构造器：<a href="https://baomidou.com/guides/wrapper/">baomidou.com/guides/wrapper</a></li>
+  <li>下一课：<a href="./0002-feedback-read-path.html">0002 · 查询链路：反馈分析页的四只 SQL</a></li>
+</ul>
+
+<footer>看不懂的地方直接问我——比如「为什么是 FOR UPDATE 而不是乐观锁」这种追问最值。</footer>
+</body>
+</html>

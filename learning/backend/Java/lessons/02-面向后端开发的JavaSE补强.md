@@ -1,6 +1,6 @@
 # 02 面向后端开发的 JavaSE 补强
 
-[返回学习目录](READEME.md)
+[返回学习目录](learning/backend/Java/READEME.md)
 
 > 笔记状态：全章已整理，可独立阅读。学习状态：List 与泛型入门已学，其余待学习。  
 > 环境：JDK 17，无需 Spring Boot、Maven 或数据库。  
